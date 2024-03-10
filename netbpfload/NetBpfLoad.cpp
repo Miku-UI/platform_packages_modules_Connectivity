@@ -289,13 +289,11 @@ int main(int argc, char** argv, char * const envp[]) {
     }
 
     if (isAtLeastT && !android::bpf::isAtLeastKernelVersion(4, 9, 0)) {
-        ALOGE("Android T requires kernel 4.9.");
-        return 1;
+        ALOGW("Android T requires kernel 4.9.");
     }
 
     if (isAtLeastU && !android::bpf::isAtLeastKernelVersion(4, 14, 0)) {
-        ALOGE("Android U requires kernel 4.14.");
-        return 1;
+        ALOGW("Android U requires kernel 4.14.");
     }
 
     if (isAtLeastV && !android::bpf::isAtLeastKernelVersion(4, 19, 0)) {
