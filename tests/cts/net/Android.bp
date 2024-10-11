@@ -46,6 +46,7 @@ java_defaults {
     ],
     jarjar_rules: "jarjar-rules-shared.txt",
     static_libs: [
+        "ApfGeneratorLib",
         "bouncycastle-unbundled",
         "FrameworksNetCommonTests",
         "core-tests-support",
@@ -179,4 +180,5 @@ android_test_helper_app {
         "cts",
         "general-tests",
     ],
+    sdk_version: "test_current",
 }

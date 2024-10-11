@@ -24,16 +24,16 @@
 #define __kernel_udphdr udphdr
 #include <linux/udp.h>
 
-#ifdef BTF
+#ifdef MAINLINE
 // BTF is incompatible with bpfloaders < v0.10, hence for S (v0.2) we must
 // ship a different file than for later versions, but we need bpfloader v0.25+
 // for obj@ver.o support
 #define BPFLOADER_MIN_VER BPFLOADER_OBJ_AT_VER_VERSION
-#else /* BTF */
-// The resulting .o needs to load on the Android S bpfloader
+#else /* MAINLINE */
+// The resulting .o needs to load on the Android S & T bpfloaders
 #define BPFLOADER_MIN_VER BPFLOADER_S_VERSION
 #define BPFLOADER_MAX_VER BPFLOADER_OBJ_AT_VER_VERSION
-#endif /* BTF */
+#endif /* MAINLINE */
 
 // Warning: values other than AID_ROOT don't work for map uid on BpfLoader < v0.21
 #define TETHERING_UID AID_ROOT
@@ -878,3 +878,4 @@ DEFINE_XDP_PROG("xdp/tether_upstream_rawip",
 LICENSE("Apache 2.0");
 CRITICAL("Connectivity (Tethering)");
 DISABLE_BTF_ON_USER_BUILDS();
+DISABLE_ON_MAINLINE_BEFORE_U_QPR3();

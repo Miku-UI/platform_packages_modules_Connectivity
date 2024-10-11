@@ -28,6 +28,7 @@ import static android.net.QosCallback.QosCallbackRegistrationException;
 import android.annotation.CallbackExecutor;
 import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
+import android.annotation.LongDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresApi;
@@ -128,6 +129,12 @@ public class ConnectivityManager {
                 "com.android.net.flags.support_is_uid_networking_blocked";
         static final String BASIC_BACKGROUND_RESTRICTIONS_ENABLED =
                 "com.android.net.flags.basic_background_restrictions_enabled";
+        static final String METERED_NETWORK_FIREWALL_CHAINS =
+                "com.android.net.flags.metered_network_firewall_chains";
+        static final String BLOCKED_REASON_OEM_DENY_CHAINS =
+                "com.android.net.flags.blocked_reason_oem_deny_chains";
+        static final String BLOCKED_REASON_NETWORK_RESTRICTED =
+                "com.android.net.flags.blocked_reason_network_restricted";
     }
 
     /**
@@ -911,6 +918,30 @@ public class ConnectivityManager {
     public static final int BLOCKED_REASON_APP_BACKGROUND = 1 << 6;
 
     /**
+     * Flag to indicate that an app is subject to OEM-specific application restrictions that would
+     * result in its network access being blocked.
+     *
+     * @see #FIREWALL_CHAIN_OEM_DENY_1
+     * @see #FIREWALL_CHAIN_OEM_DENY_2
+     * @see #FIREWALL_CHAIN_OEM_DENY_3
+     * @hide
+     */
+    @FlaggedApi(Flags.BLOCKED_REASON_OEM_DENY_CHAINS)
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int BLOCKED_REASON_OEM_DENY = 1 << 7;
+
+    /**
+     * Flag to indicate that an app does not have permission to access the specified network,
+     * for example, because it does not have the {@link android.Manifest.permission#INTERNET}
+     * permission.
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.BLOCKED_REASON_NETWORK_RESTRICTED)
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int BLOCKED_REASON_NETWORK_RESTRICTED = 1 << 8;
+
+    /**
      * Flag to indicate that an app is subject to Data saver restrictions that would
      * result in its metered network access being blocked.
      *
@@ -950,6 +981,8 @@ public class ConnectivityManager {
             BLOCKED_REASON_LOCKDOWN_VPN,
             BLOCKED_REASON_LOW_POWER_STANDBY,
             BLOCKED_REASON_APP_BACKGROUND,
+            BLOCKED_REASON_OEM_DENY,
+            BLOCKED_REASON_NETWORK_RESTRICTED,
             BLOCKED_METERED_REASON_DATA_SAVER,
             BLOCKED_METERED_REASON_USER_RESTRICTED,
             BLOCKED_METERED_REASON_ADMIN_DISABLED,
@@ -1068,6 +1101,61 @@ public class ConnectivityManager {
     @SystemApi(client = MODULE_LIBRARIES)
     public static final int FIREWALL_CHAIN_OEM_DENY_3 = 9;
 
+    /**
+     * Firewall chain for allow list on metered networks
+     *
+     * UIDs added to this chain have access to metered networks, unless they're also in one of the
+     * denylist, {@link #FIREWALL_CHAIN_METERED_DENY_USER},
+     * {@link #FIREWALL_CHAIN_METERED_DENY_ADMIN}
+     *
+     * Note that this chain is used from a separate bpf program that is triggered by iptables and
+     * can not be controlled by {@link ConnectivityManager#setFirewallChainEnabled}.
+     *
+     * @hide
+     */
+    // TODO: Merge this chain with data saver and support setFirewallChainEnabled
+    @FlaggedApi(Flags.METERED_NETWORK_FIREWALL_CHAINS)
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_CHAIN_METERED_ALLOW = 10;
+
+    /**
+     * Firewall chain for user-set restrictions on metered networks
+     *
+     * UIDs added to this chain do not have access to metered networks.
+     * UIDs should be added to this chain based on user settings.
+     * To restrict metered network based on admin configuration (e.g. enterprise policies),
+     * {@link #FIREWALL_CHAIN_METERED_DENY_ADMIN} should be used.
+     * This chain corresponds to {@link #BLOCKED_METERED_REASON_USER_RESTRICTED}
+     *
+     * Note that this chain is used from a separate bpf program that is triggered by iptables and
+     * can not be controlled by {@link ConnectivityManager#setFirewallChainEnabled}.
+     *
+     * @hide
+     */
+    // TODO: Support setFirewallChainEnabled to control this chain
+    @FlaggedApi(Flags.METERED_NETWORK_FIREWALL_CHAINS)
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_CHAIN_METERED_DENY_USER = 11;
+
+    /**
+     * Firewall chain for admin-set restrictions on metered networks
+     *
+     * UIDs added to this chain do not have access to metered networks.
+     * UIDs should be added to this chain based on admin configuration (e.g. enterprise policies).
+     * To restrict metered network based on user settings, {@link #FIREWALL_CHAIN_METERED_DENY_USER}
+     * should be used.
+     * This chain corresponds to {@link #BLOCKED_METERED_REASON_ADMIN_DISABLED}
+     *
+     * Note that this chain is used from a separate bpf program that is triggered by iptables and
+     * can not be controlled by {@link ConnectivityManager#setFirewallChainEnabled}.
+     *
+     * @hide
+     */
+    // TODO: Support setFirewallChainEnabled to control this chain
+    @FlaggedApi(Flags.METERED_NETWORK_FIREWALL_CHAINS)
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_CHAIN_METERED_DENY_ADMIN = 12;
+
     /** @hide */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(flag = false, prefix = "FIREWALL_CHAIN_", value = {
@@ -1079,7 +1167,10 @@ public class ConnectivityManager {
         FIREWALL_CHAIN_BACKGROUND,
         FIREWALL_CHAIN_OEM_DENY_1,
         FIREWALL_CHAIN_OEM_DENY_2,
-        FIREWALL_CHAIN_OEM_DENY_3
+        FIREWALL_CHAIN_OEM_DENY_3,
+        FIREWALL_CHAIN_METERED_ALLOW,
+        FIREWALL_CHAIN_METERED_DENY_USER,
+        FIREWALL_CHAIN_METERED_DENY_ADMIN
     })
     public @interface FirewallChain {}
 
@@ -1117,6 +1208,16 @@ public class ConnectivityManager {
     })
     public @interface FirewallRule {}
 
+    /** @hide */
+    public static final long FEATURE_USE_DECLARED_METHODS_FOR_CALLBACKS = 1L;
+
+    /** @hide */
+    @Retention(RetentionPolicy.SOURCE)
+    @LongDef(flag = true, prefix = "FEATURE_", value = {
+            FEATURE_USE_DECLARED_METHODS_FOR_CALLBACKS
+    })
+    public @interface ConnectivityManagerFeature {}
+
     /**
      * A kludge to facilitate static access where a Context pointer isn't available, like in the
      * case of the static set/getProcessDefaultNetwork methods and from the Network class.
@@ -1129,6 +1230,14 @@ public class ConnectivityManager {
 
     @GuardedBy("mTetheringEventCallbacks")
     private TetheringManager mTetheringManager;
+
+    private final Object mEnabledConnectivityManagerFeaturesLock = new Object();
+    // mEnabledConnectivityManagerFeatures is lazy-loaded in this ConnectivityManager instance, but
+    // fetched from ConnectivityService, where it is loaded in ConnectivityService startup, so it
+    // should have consistent values.
+    @GuardedBy("sEnabledConnectivityManagerFeaturesLock")
+    @ConnectivityManagerFeature
+    private Long mEnabledConnectivityManagerFeatures = null;
 
     private TetheringManager getTetheringManager() {
         synchronized (mTetheringEventCallbacks) {
@@ -4439,6 +4548,20 @@ public class ConnectivityManager {
         return request;
     }
 
+    private boolean isFeatureEnabled(@ConnectivityManagerFeature long connectivityManagerFeature) {
+        synchronized (mEnabledConnectivityManagerFeaturesLock) {
+            if (mEnabledConnectivityManagerFeatures == null) {
+                try {
+                    mEnabledConnectivityManagerFeatures =
+                            mService.getEnabledConnectivityManagerFeatures();
+                } catch (RemoteException e) {
+                    e.rethrowFromSystemServer();
+                }
+            }
+            return (mEnabledConnectivityManagerFeatures & connectivityManagerFeature) != 0;
+        }
+    }
+
     private NetworkRequest sendRequestForNetwork(NetworkCapabilities need, NetworkCallback callback,
             int timeoutMs, NetworkRequest.Type reqType, int legacyType, CallbackHandler handler) {
         return sendRequestForNetwork(Process.INVALID_UID, need, callback, timeoutMs, reqType,
@@ -6065,7 +6188,7 @@ public class ConnectivityManager {
     })
     public void addUidToMeteredNetworkAllowList(final int uid) {
         try {
-            mService.updateMeteredNetworkAllowList(uid, true /* add */);
+            mService.setUidFirewallRule(FIREWALL_CHAIN_METERED_ALLOW, uid, FIREWALL_RULE_ALLOW);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -6088,7 +6211,7 @@ public class ConnectivityManager {
     })
     public void removeUidFromMeteredNetworkAllowList(final int uid) {
         try {
-            mService.updateMeteredNetworkAllowList(uid, false /* remove */);
+            mService.setUidFirewallRule(FIREWALL_CHAIN_METERED_ALLOW, uid, FIREWALL_RULE_DENY);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -6098,10 +6221,17 @@ public class ConnectivityManager {
      * Adds the specified UID to the list of UIDs that are not allowed to use background data on
      * metered networks. Takes precedence over {@link #addUidToMeteredNetworkAllowList}.
      *
+     * On V+, {@link #setUidFirewallRule} should be used with
+     * {@link #FIREWALL_CHAIN_METERED_DENY_USER} or {@link #FIREWALL_CHAIN_METERED_DENY_ADMIN}
+     * based on the reason so that users can receive {@link #BLOCKED_METERED_REASON_USER_RESTRICTED}
+     * or {@link #BLOCKED_METERED_REASON_ADMIN_DISABLED}, respectively.
+     * This API always uses {@link #FIREWALL_CHAIN_METERED_DENY_USER}.
+     *
      * @param uid uid of target app
      * @throws IllegalStateException if updating deny list failed.
      * @hide
      */
+    // TODO(b/332649177): Deprecate this API after V
     @SystemApi(client = MODULE_LIBRARIES)
     @RequiresPermission(anyOf = {
             android.Manifest.permission.NETWORK_SETTINGS,
@@ -6110,7 +6240,7 @@ public class ConnectivityManager {
     })
     public void addUidToMeteredNetworkDenyList(final int uid) {
         try {
-            mService.updateMeteredNetworkDenyList(uid, true /* add */);
+            mService.setUidFirewallRule(FIREWALL_CHAIN_METERED_DENY_USER, uid, FIREWALL_RULE_DENY);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -6121,10 +6251,17 @@ public class ConnectivityManager {
      * networks if background data is not restricted. The deny list takes precedence over the
      * allow list.
      *
+     * On V+, {@link #setUidFirewallRule} should be used with
+     * {@link #FIREWALL_CHAIN_METERED_DENY_USER} or {@link #FIREWALL_CHAIN_METERED_DENY_ADMIN}
+     * based on the reason so that users can receive {@link #BLOCKED_METERED_REASON_USER_RESTRICTED}
+     * or {@link #BLOCKED_METERED_REASON_ADMIN_DISABLED}, respectively.
+     * This API always uses {@link #FIREWALL_CHAIN_METERED_DENY_USER}.
+     *
      * @param uid uid of target app
      * @throws IllegalStateException if updating deny list failed.
      * @hide
      */
+    // TODO(b/332649177): Deprecate this API after V
     @SystemApi(client = MODULE_LIBRARIES)
     @RequiresPermission(anyOf = {
             android.Manifest.permission.NETWORK_SETTINGS,
@@ -6133,7 +6270,7 @@ public class ConnectivityManager {
     })
     public void removeUidFromMeteredNetworkDenyList(final int uid) {
         try {
-            mService.updateMeteredNetworkDenyList(uid, false /* remove */);
+            mService.setUidFirewallRule(FIREWALL_CHAIN_METERED_DENY_USER, uid, FIREWALL_RULE_ALLOW);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -6190,6 +6327,10 @@ public class ConnectivityManager {
 
     /**
      * Enables or disables the specified firewall chain.
+     *
+     * Note that metered firewall chains can not be controlled by this API.
+     * See {@link #FIREWALL_CHAIN_METERED_ALLOW}, {@link #FIREWALL_CHAIN_METERED_DENY_USER}, and
+     * {@link #FIREWALL_CHAIN_METERED_DENY_ADMIN} for more detail.
      *
      * @param chain target chain.
      * @param enable whether the chain should be enabled.
@@ -6284,15 +6425,16 @@ public class ConnectivityManager {
     @RequiresPermission(NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)
     public boolean isUidNetworkingBlocked(int uid, boolean isNetworkMetered) {
         if (!SdkLevel.isAtLeastU()) {
-            Log.wtf(TAG, "isUidNetworkingBlocked is not supported on pre-U devices");
+            throw new IllegalStateException(
+                    "isUidNetworkingBlocked is not supported on pre-U devices");
         }
-        final BpfNetMapsReader reader = BpfNetMapsReader.getInstance();
+        final NetworkStackBpfNetMaps reader = NetworkStackBpfNetMaps.getInstance();
         // Note that before V, the data saver status in bpf is written by ConnectivityService
         // when receiving {@link #ACTION_RESTRICT_BACKGROUND_CHANGED}. Thus,
         // the status is not synchronized.
         // On V+, the data saver status is set by platform code when enabling/disabling
         // data saver, which is synchronized.
-        return reader.isUidNetworkingBlocked(uid, isNetworkMetered, reader.getDataSaverEnabled());
+        return reader.isUidNetworkingBlocked(uid, isNetworkMetered);
     }
 
     /** @hide */

@@ -43,9 +43,9 @@ import android.util.ArraySet;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
+import com.android.testutils.AutoReleaseNetworkCallbackRule;
 import com.android.testutils.DeviceConfigRule;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -55,8 +55,12 @@ import java.util.Set;
 
 @RunWith(AndroidJUnit4.class)
 public class MultinetworkApiTest {
-    @Rule
+    @Rule(order = 1)
     public final DeviceConfigRule mDeviceConfigRule = new DeviceConfigRule();
+
+    @Rule(order = 2)
+    public final AutoReleaseNetworkCallbackRule
+            mNetworkCallbackRule = new AutoReleaseNetworkCallbackRule();
 
     static {
         System.loadLibrary("nativemultinetwork_jni");
@@ -91,13 +95,6 @@ public class MultinetworkApiTest {
         mCM = mContext.getSystemService(ConnectivityManager.class);
         mCR = mContext.getContentResolver();
         mCtsNetUtils = new CtsNetUtils(mContext);
-    }
-
-    @After
-    public void tearDown() {
-        if (mCtsNetUtils.cellConnectAttempted()) {
-            mCtsNetUtils.disconnectFromCell();
-        }
     }
 
     @Test
@@ -268,14 +265,22 @@ public class MultinetworkApiTest {
      * Get all testable Networks with internet capability.
      */
     private Set<Network> getTestableNetworks() throws InterruptedException {
+        // Calling requestNetwork() to request a cell or Wi-Fi network via CtsNetUtils or
+        // NetworkCallbackRule requires the CHANGE_NETWORK_STATE permission. This permission cannot
+        // be granted to instant apps. Therefore, return currently available testable networks
+        // directly in instant mode.
+        if (mContext.getApplicationInfo().isInstantApp()) {
+            return new ArraySet<>(mCtsNetUtils.getTestableNetworks());
+        }
+
         // Obtain cell and Wi-Fi through CtsNetUtils (which uses NetworkCallbacks), as they may have
         // just been reconnected by the test using NetworkCallbacks, so synchronous calls may not
         // yet return them (synchronous calls and callbacks should not be mixed for a given
         // Network).
         final Set<Network> testableNetworks = new ArraySet<>();
         if (mContext.getPackageManager().hasSystemFeature(FEATURE_TELEPHONY)) {
-            if (!mCtsNetUtils.cellConnectAttempted()) {
-                mRequestedCellNetwork = mCtsNetUtils.connectToCell();
+            if (mRequestedCellNetwork == null) {
+                mRequestedCellNetwork = mNetworkCallbackRule.requestCell();
             }
             assertNotNull("Cell network requested but not obtained", mRequestedCellNetwork);
             testableNetworks.add(mRequestedCellNetwork);

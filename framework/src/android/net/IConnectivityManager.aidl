@@ -242,10 +242,6 @@ interface IConnectivityManager
 
     void setDataSaverEnabled(boolean enable);
 
-    void updateMeteredNetworkAllowList(int uid, boolean add);
-
-    void updateMeteredNetworkDenyList(int uid, boolean add);
-
     void setUidFirewallRule(int chain, int uid, int rule);
 
     int getUidFirewallRule(int chain, int uid);
@@ -263,4 +259,6 @@ interface IConnectivityManager
     void setTestLowTcpPollingTimerForKeepalive(long timeMs);
 
     IBinder getRoutingCoordinatorService();
+
+    long getEnabledConnectivityManagerFeatures();
 }

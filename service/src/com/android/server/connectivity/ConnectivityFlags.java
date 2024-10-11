@@ -38,6 +38,17 @@ public final class ConnectivityFlags {
 
     public static final String REQUEST_RESTRICTED_WIFI =
             "request_restricted_wifi";
+
+    public static final String INGRESS_TO_VPN_ADDRESS_FILTERING =
+            "ingress_to_vpn_address_filtering";
+
+    public static final String BACKGROUND_FIREWALL_CHAIN = "background_firewall_chain";
+
+    public static final String DELAY_DESTROY_SOCKETS = "delay_destroy_sockets";
+
+    public static final String USE_DECLARED_METHODS_FOR_CALLBACKS =
+            "use_declared_methods_for_callbacks";
+
     private boolean mNoRematchAllRequestsOnRegister;
 
     /**

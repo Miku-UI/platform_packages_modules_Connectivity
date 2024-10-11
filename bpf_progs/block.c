@@ -19,7 +19,7 @@
 #include <netinet/in.h>
 #include <stdint.h>
 
-// The resulting .o needs to load on the Android T bpfloader
+// The resulting .o needs to load on Android T+
 #define BPFLOADER_MIN_VER BPFLOADER_T_VERSION
 
 #include "bpf_helpers.h"
@@ -76,3 +76,4 @@ DEFINE_NETD_RO_BPF_PROG("bind6/block_port", bind6_block_port, KVER_4_19)
 LICENSE("Apache 2.0");
 CRITICAL("ConnectivityNative");
 DISABLE_BTF_ON_USER_BUILDS();
+DISABLE_ON_MAINLINE_BEFORE_U_QPR3();
