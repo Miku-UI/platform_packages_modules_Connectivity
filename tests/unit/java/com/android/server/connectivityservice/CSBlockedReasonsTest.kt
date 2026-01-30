@@ -43,8 +43,8 @@ import android.os.Build
 import android.os.Process
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo
 import com.android.testutils.DevSdkIgnoreRunner
-import com.android.testutils.RecorderCallback.CallbackEntry.BlockedStatusInt
 import com.android.testutils.TestableNetworkCallback
+import com.android.testutils.TestableNetworkCallback.Event.BlockedStatusInt
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.ArgumentMatchers.anyBoolean
@@ -336,7 +336,6 @@ class CSBlockedReasonsTest : CSTest() {
 
         // CS must send correct blocked reasons after per app default network change
         ConnectivitySettingsManager.setMobileDataPreferredUids(context, setOf(Process.myUid()))
-        service.updateMobileDataPreferredUids()
         cb.expectAvailableCallbacks(
                 cellAgent.network,
                 validated = false,
@@ -345,7 +344,6 @@ class CSBlockedReasonsTest : CSTest() {
 
         // Remove per app default network request
         ConnectivitySettingsManager.setMobileDataPreferredUids(context, setOf())
-        service.updateMobileDataPreferredUids()
         cb.expectAvailableCallbacks(
                 wifiAgent.network,
                 validated = false,

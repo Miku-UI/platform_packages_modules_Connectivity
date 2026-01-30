@@ -19,6 +19,7 @@ package com.android.server.net.ct;
 import static com.google.common.io.Files.toByteArray;
 import static com.google.common.truth.Truth.assertThat;
 
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -27,8 +28,10 @@ import static org.mockito.Mockito.when;
 import android.app.DownloadManager;
 import android.app.DownloadManager.Query;
 import android.app.DownloadManager.Request;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
@@ -63,6 +66,8 @@ import java.security.Signature;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /** Tests for the {@link CertificateTransparencyDownloader}. */
 @RunWith(JUnit4.class)
@@ -76,13 +81,23 @@ public class CertificateTransparencyDownloaderTest {
     private PrivateKey mPrivateKey;
     private PublicKey mPublicKey;
     private Context mContext;
-    private DataStore mDataStore;
     private SignatureVerifier mSignatureVerifier;
     private CompatibilityVersion mCompatVersion;
     private CertificateTransparencyDownloader mCertificateTransparencyDownloader;
 
     private long mNextDownloadId = 666;
     private static final long LOG_LIST_TIMESTAMP = 123456789L;
+
+    private final CountDownLatch mInstallCompletedLatch = new CountDownLatch(1);
+    private final BroadcastReceiver mInstallCompletedReceiver =
+            new BroadcastReceiver() {
+                public void onReceive(Context context, Intent intent) {
+                    if (intent.getAction().equals(Config.INSTALL_COMPLETE_ACTION)) {
+                        mInstallCompletedLatch.countDown();
+                    }
+                }
+                ;
+            };
 
     @Before
     public void setUp() throws IOException, GeneralSecurityException {
@@ -93,7 +108,6 @@ public class CertificateTransparencyDownloaderTest {
         mPublicKey = keyPair.getPublic();
 
         mContext = InstrumentationRegistry.getInstrumentation().getContext();
-        mDataStore = new DataStore(File.createTempFile("datastore-test", ".properties"));
         mSignatureVerifier = new SignatureVerifier(mContext);
 
         CompatibilityVersion.setRootDirectoryForTesting(mContext.getFilesDir());
@@ -105,7 +119,6 @@ public class CertificateTransparencyDownloaderTest {
         mCertificateTransparencyDownloader =
                 new CertificateTransparencyDownloader(
                         mContext,
-                        mDataStore,
                         new DownloadHelper(mDownloadManager),
                         mSignatureVerifier,
                         mLogger,
@@ -113,14 +126,18 @@ public class CertificateTransparencyDownloaderTest {
 
         prepareDownloadManager();
         mSignatureVerifier.addAllowedKey(mPublicKey);
-        mDataStore.load();
+
+        mContext.registerReceiver(
+                mInstallCompletedReceiver,
+                new IntentFilter(Config.INSTALL_COMPLETE_ACTION),
+                Context.RECEIVER_EXPORTED);
     }
 
     @After
     public void tearDown() {
         mSignatureVerifier.resetPublicKey();
         mCompatVersion.delete();
-        mDataStore.delete();
+        mContext.unregisterReceiver(mInstallCompletedReceiver);
     }
 
     @Test
@@ -183,6 +200,57 @@ public class CertificateTransparencyDownloaderTest {
     }
 
     @Test
+    public void testDownloader_publicKeyDownloadSuccess_publicKeyFileNotRead_logsFailure()
+            throws Exception {
+        mCertificateTransparencyDownloader.startPublicKeyDownload();
+
+        File publicKeyFile = writePublicKeyToFile(mPublicKey);
+        // Set the public key file to not be readable to simulate an IOException being thrown
+        publicKeyFile.setReadable(false);
+        mCertificateTransparencyDownloader.onReceive(
+                mContext, makePublicKeyDownloadCompleteIntent(publicKeyFile));
+
+        verify(mLogger, times(1))
+                .logCTLogListUpdateStateChangedEvent(
+                        LogListUpdateStatus.builder()
+                                .setState(CTLogListUpdateState.UNABLE_TO_READ_FILE)
+                                .build());
+    }
+
+    @Test
+    public void testDownloader_publicKeyDownloadSuccess_publicKeyNotAllowed_logsFailure()
+            throws Exception {
+        mCertificateTransparencyDownloader.startPublicKeyDownload();
+        PublicKey notAllowed = KeyPairGenerator.getInstance("RSA").generateKeyPair().getPublic();
+
+        mCertificateTransparencyDownloader.onReceive(
+                mContext, makePublicKeyDownloadCompleteIntent(writePublicKeyToFile(notAllowed)));
+
+        verify(mLogger, times(1))
+                .logCTLogListUpdateStateChangedEvent(
+                        LogListUpdateStatus.builder()
+                                .setState(CTLogListUpdateState.PUBLIC_KEY_NOT_ALLOWED)
+                                .build());
+    }
+
+    @Test
+    public void testDownloader_publicKeyDownloadSuccess_publicKeyInvalidEncoding_logsFailure()
+            throws Exception {
+        mCertificateTransparencyDownloader.startPublicKeyDownload();
+
+        mCertificateTransparencyDownloader.onReceive(
+                mContext,
+                makePublicKeyDownloadCompleteIntent(
+                        writeToFile("i_am_not_a_base64_encoded_public_key".getBytes())));
+
+        verify(mLogger, times(1))
+                .logCTLogListUpdateStateChangedEvent(
+                        LogListUpdateStatus.builder()
+                                .setState(CTLogListUpdateState.PUBLIC_KEY_INVALID)
+                                .build());
+    }
+
+    @Test
     public void
             testDownloader_publicKeyDownloadSuccess_updatePublicKeyFail_doNotStartMetadataDownload()
                     throws Exception {
@@ -216,7 +284,7 @@ public class CertificateTransparencyDownloaderTest {
     }
 
     @Test
-    public void testDownloader_publicKeyDownloadFail_logsFailure() throws Exception {
+    public void testDownloader_publicKeyDownloadFail_logsDownloadFailure() throws Exception {
         mCertificateTransparencyDownloader.startPublicKeyDownload();
 
         mCertificateTransparencyDownloader.onReceive(
@@ -291,7 +359,48 @@ public class CertificateTransparencyDownloaderTest {
         mCertificateTransparencyDownloader.onReceive(
                 mContext, makeContentDownloadCompleteIntent(mCompatVersion, logListFile));
 
+        assertInstallCompleted();
         assertInstallSuccessful(newVersion);
+    }
+
+    @Test
+    public void testDownloader_logListAlreadyExists_sendsBroadcast() throws Exception {
+        String newVersion = "456";
+        File logListFile = makeLogListFile(newVersion);
+        File metadataFile = sign(logListFile);
+        mSignatureVerifier.setPublicKey(mPublicKey);
+
+        CountDownLatch installTwiceLatch = new CountDownLatch(2);
+        BroadcastReceiver installTwiceReceiver =
+                new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        installTwiceLatch.countDown();
+                    }
+                };
+        mContext.registerReceiver(
+                installTwiceReceiver,
+                new IntentFilter(Config.INSTALL_COMPLETE_ACTION),
+                Context.RECEIVER_EXPORTED);
+
+        // 1. Install the log list once.
+        mCertificateTransparencyDownloader.startMetadataDownload();
+        assertNoVersionIsInstalled();
+        mCertificateTransparencyDownloader.onReceive(
+                mContext, makeMetadataDownloadCompleteIntent(mCompatVersion, metadataFile));
+        mCertificateTransparencyDownloader.onReceive(
+                mContext, makeContentDownloadCompleteIntent(mCompatVersion, logListFile));
+        assertInstallSuccessful(newVersion);
+
+        // 2. Receiving the same log list does not reinstall but the broadcast is sent.
+        mCertificateTransparencyDownloader.onReceive(
+                mContext, makeContentDownloadCompleteIntent(mCompatVersion, logListFile));
+
+        assertTrue(
+                "The test timed out while waiting for the log list download.",
+                installTwiceLatch.await(10, TimeUnit.SECONDS));
+        assertInstallSuccessful(newVersion);
+        mContext.unregisterReceiver(installTwiceReceiver);
     }
 
     @Test
@@ -363,6 +472,27 @@ public class CertificateTransparencyDownloaderTest {
                 .logCTLogListUpdateStateChangedEvent(mUpdateStatusCaptor.capture());
         assertThat(mUpdateStatusCaptor.getValue().state())
                 .isEqualTo(CTLogListUpdateState.PUBLIC_KEY_NOT_FOUND);
+    }
+
+    @Test
+    public void testDownloader_contentDownloadSuccess_signatureFileNotRead_logsSingleFailure()
+            throws Exception {
+        File logListFile = makeLogListFile("456");
+        File metadataFile = sign(logListFile);
+        mSignatureVerifier.setPublicKey(mPublicKey);
+        mCertificateTransparencyDownloader.startMetadataDownload();
+
+        mCertificateTransparencyDownloader.onReceive(
+                mContext, makeMetadataDownloadCompleteIntent(mCompatVersion, metadataFile));
+        // Set the log list file to not be readable to simulate an IOException being thrown
+        logListFile.setReadable(false);
+        mCertificateTransparencyDownloader.onReceive(
+                mContext, makeContentDownloadCompleteIntent(mCompatVersion, logListFile));
+
+        verify(mLogger, times(1))
+                .logCTLogListUpdateStateChangedEvent(mUpdateStatusCaptor.capture());
+        assertThat(mUpdateStatusCaptor.getValue().state())
+                .isEqualTo(CTLogListUpdateState.UNABLE_TO_READ_FILE);
     }
 
     @Test
@@ -501,6 +631,7 @@ public class CertificateTransparencyDownloaderTest {
                 mContext, makeContentDownloadCompleteIntent(mCompatVersion, logListFile));
 
         // Assert
+        assertInstallCompleted();
         assertInstallSuccessful(newVersion);
         verify(mLogger, times(1))
                 .logCTLogListUpdateStateChangedEvent(mUpdateStatusCaptor.capture());
@@ -523,6 +654,12 @@ public class CertificateTransparencyDownloaderTest {
         assertThat(logsDir.exists()).isTrue();
         File logsFile = new File(logsDir, CompatibilityVersion.LOGS_LIST_FILE_NAME);
         assertThat(logsFile.exists()).isTrue();
+    }
+
+    private void assertInstallCompleted() throws InterruptedException {
+        assertTrue(
+                "The test timed out while waiting for the log list download.",
+                mInstallCompletedLatch.await(10, TimeUnit.SECONDS));
     }
 
     private void prepareDownloadManager() {

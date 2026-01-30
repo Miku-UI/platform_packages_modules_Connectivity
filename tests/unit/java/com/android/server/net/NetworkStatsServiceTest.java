@@ -27,6 +27,8 @@ import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.ConnectivityManager.TYPE_MOBILE;
 import static android.net.ConnectivityManager.TYPE_TEST;
 import static android.net.ConnectivityManager.TYPE_WIFI;
+import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
+import static android.net.NetworkCapabilities.TRANSPORT_SATELLITE;
 import static android.net.NetworkIdentity.OEM_PAID;
 import static android.net.NetworkIdentity.OEM_PRIVATE;
 import static android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK;
@@ -71,15 +73,13 @@ import static com.android.server.net.NetworkStatsService.ACTION_NETWORK_STATS_PO
 import static com.android.server.net.NetworkStatsService.ACTION_NETWORK_STATS_UPDATED;
 import static com.android.server.net.NetworkStatsService.BROADCAST_NETWORK_STATS_UPDATED_RATE_LIMIT_ENABLED_FLAG;
 import static com.android.server.net.NetworkStatsService.DEFAULT_TRAFFIC_STATS_CACHE_EXPIRY_DURATION_MS;
-import static com.android.server.net.NetworkStatsService.DEFAULT_TRAFFIC_STATS_SERVICE_CACHE_MAX_ENTRIES;
+import static com.android.server.net.NetworkStatsService.DEFAULT_TRAFFIC_STATS_CACHE_MAX_ENTRIES;
 import static com.android.server.net.NetworkStatsService.NETSTATS_FASTDATAINPUT_FALLBACKS_COUNTER_NAME;
 import static com.android.server.net.NetworkStatsService.NETSTATS_FASTDATAINPUT_SUCCESSES_COUNTER_NAME;
 import static com.android.server.net.NetworkStatsService.NETSTATS_IMPORT_ATTEMPTS_COUNTER_NAME;
 import static com.android.server.net.NetworkStatsService.NETSTATS_IMPORT_FALLBACKS_COUNTER_NAME;
 import static com.android.server.net.NetworkStatsService.NETSTATS_IMPORT_SUCCESSES_COUNTER_NAME;
 import static com.android.server.net.NetworkStatsService.TRAFFICSTATS_CLIENT_RATE_LIMIT_CACHE_ENABLED_FLAG;
-import static com.android.server.net.NetworkStatsService.TRAFFICSTATS_SERVICE_RATE_LIMIT_CACHE_ENABLED_FLAG;
-import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -129,7 +129,6 @@ import android.net.TestNetworkSpecifier;
 import android.net.TetherStatsParcel;
 import android.net.TetheringManager;
 import android.net.UnderlyingNetworkInfo;
-import android.net.netstats.StatsResult;
 import android.net.netstats.TrafficStatsRateLimitCacheConfig;
 import android.net.netstats.provider.INetworkStatsProviderCallback;
 import android.net.wifi.WifiInfo;
@@ -166,8 +165,8 @@ import com.android.net.module.util.LocationPermissionChecker;
 import com.android.net.module.util.SkDestroyListener;
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.Struct.S32;
+import com.android.net.module.util.Struct.S64;
 import com.android.net.module.util.Struct.U8;
-import com.android.net.module.util.bpf.CookieTagMapKey;
 import com.android.net.module.util.bpf.CookieTagMapValue;
 import com.android.net.module.util.netlink.InetDiagMessage;
 import com.android.server.connectivity.ConnectivityResources;
@@ -224,7 +223,7 @@ import java.util.function.Consumer;
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
 // NetworkStatsService is not updatable before T, so tests do not need to be backwards compatible
-@DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
 public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     @Rule
     public final DevSdkIgnoreRule ignoreRule = new DevSdkIgnoreRule();
@@ -290,14 +289,14 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     @Mock
     private SkDestroyListener mSkDestroyListener;
 
-    private TestBpfMap<CookieTagMapKey, CookieTagMapValue> mCookieTagMap = new TestBpfMap<>(
-            CookieTagMapKey.class, CookieTagMapValue.class);
+    private TestBpfMap<S64, CookieTagMapValue> mCookieTagMap = new TestBpfMap<>(
+            S64.class, CookieTagMapValue.class);
     private TestBpfMap<StatsMapKey, StatsMapValue> mStatsMapA = new TestBpfMap<>(StatsMapKey.class,
             StatsMapValue.class);
     private TestBpfMap<StatsMapKey, StatsMapValue> mStatsMapB = new TestBpfMap<>(StatsMapKey.class,
             StatsMapValue.class);
-    private TestBpfMap<UidStatsMapKey, StatsMapValue> mAppUidStatsMap = new TestBpfMap<>(
-            UidStatsMapKey.class, StatsMapValue.class);
+    private TestBpfMap<S32, StatsMapValue> mAppUidStatsMap = new TestBpfMap<>(
+            S32.class, StatsMapValue.class);
     private TestBpfMap<S32, StatsMapValue> mIfaceStatsMap = new TestBpfMap<>(
             S32.class, StatsMapValue.class);
     private NetworkStatsService mService;
@@ -578,7 +577,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         }
 
         @Override
-        public IBpfMap<CookieTagMapKey, CookieTagMapValue> getCookieTagMap() {
+        public IBpfMap<S64, CookieTagMapValue> getCookieTagMap() {
             return mCookieTagMap;
         }
 
@@ -593,7 +592,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         }
 
         @Override
-        public IBpfMap<UidStatsMapKey, StatsMapValue> getAppUidStatsMap() {
+        public IBpfMap<S32, StatsMapValue> getAppUidStatsMap() {
             return mAppUidStatsMap;
         }
 
@@ -604,7 +603,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
         @Override
         public boolean isDebuggable() {
-            return mIsDebuggable == Boolean.TRUE;
+            return Objects.equals(mIsDebuggable, Boolean.TRUE);
         }
 
         @Override
@@ -619,26 +618,15 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         }
 
         @Override
-        public boolean isTrafficStatsServiceRateLimitCacheEnabled(Context ctx,
-                boolean isClientCacheEnabled) {
-            return !isClientCacheEnabled && mFeatureFlags.getOrDefault(
-                    TRAFFICSTATS_SERVICE_RATE_LIMIT_CACHE_ENABLED_FLAG, false);
+        public boolean isTetheringFeatureNotChickenedOut(@NonNull Context cts,
+                @NonNull String feature) {
+            return mFeatureFlags.getOrDefault(feature, true);
         }
 
         @Override
         public boolean enabledBroadcastNetworkStatsUpdatedRateLimiting(Context ctx) {
             return mFeatureFlags.getOrDefault(
                     BROADCAST_NETWORK_STATS_UPDATED_RATE_LIMIT_ENABLED_FLAG, true);
-        }
-
-        @Override
-        public int getTrafficStatsRateLimitCacheExpiryDuration() {
-            return DEFAULT_TRAFFIC_STATS_CACHE_EXPIRY_DURATION_MS;
-        }
-
-        @Override
-        public int getTrafficStatsServiceRateLimitCacheMaxEntries() {
-            return DEFAULT_TRAFFIC_STATS_SERVICE_CACHE_MAX_ENTRIES;
         }
 
         @Override
@@ -649,7 +637,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                             .setIsCacheEnabled(mFeatureFlags.getOrDefault(
                                     TRAFFICSTATS_CLIENT_RATE_LIMIT_CACHE_ENABLED_FLAG, false))
                             .setExpiryDurationMs(DEFAULT_TRAFFIC_STATS_CACHE_EXPIRY_DURATION_MS)
-                            .setMaxEntries(DEFAULT_TRAFFIC_STATS_SERVICE_CACHE_MAX_ENTRIES)
+                            .setMaxEntries(DEFAULT_TRAFFIC_STATS_CACHE_MAX_ENTRIES)
                             .build();
             return config;
         }
@@ -1139,7 +1127,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         // Pretend that 5g mobile network comes online
         final NetworkStateSnapshot[] mobileStates =
                 new NetworkStateSnapshot[] {buildMobileState(IMSI_1), buildStateOfTransport(
-                        NetworkCapabilities.TRANSPORT_CELLULAR, TYPE_MOBILE,
+                        TRANSPORT_CELLULAR, TYPE_MOBILE,
                         TEST_IFACE2, IMSI_1, null /* wifiNetworkKey */,
                         true /* isTemporarilyNotMetered */, false /* isRoaming */)};
         setMobileRatTypeAndWaitForIdle(TelephonyManager.NETWORK_TYPE_NR);
@@ -1414,7 +1402,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         mockNetworkStatsUidDetail(buildEmptyStats());
 
         final NetworkStateSnapshot mobileState = buildStateOfTransport(
-                NetworkCapabilities.TRANSPORT_CELLULAR, TYPE_MOBILE,
+                TRANSPORT_CELLULAR, TYPE_MOBILE,
                 TEST_IFACE2, IMSI_1, null /* wifiNetworkKey */,
                 false /* isTemporarilyNotMetered */, false /* isRoaming */);
 
@@ -1473,7 +1461,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         final String[] mobileIfaces = {TEST_IFACE2};
         mockNetworkStatsUidDetail(buildEmptyStats(), emptyTetherStats, mobileIfaces);
         final NetworkStats mobileStats = mService.getUidStatsForTransport(
-                NetworkCapabilities.TRANSPORT_CELLULAR);
+                TRANSPORT_CELLULAR);
 
         assertEquals(2, mobileStats.size());
         // Verify the operation count stats that caused by incrementOperationCount only appears
@@ -1492,7 +1480,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         mockNetworkStatsUidDetail(buildEmptyStats());
 
         final NetworkStateSnapshot mobileState = buildStateOfTransport(
-                NetworkCapabilities.TRANSPORT_CELLULAR, TYPE_MOBILE,
+                TRANSPORT_CELLULAR, TYPE_MOBILE,
                 TEST_IFACE2, IMSI_1, null /* wifiNetworkKey */,
                 false /* isTemporarilyNotMetered */, false /* isRoaming */);
 
@@ -1523,7 +1511,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         // with getUidStatsForTransport(TRANSPORT_CELLULAR) return stats of both cellular
         // and satellite
         final NetworkStats mobileStats = mService.getUidStatsForTransport(
-                NetworkCapabilities.TRANSPORT_CELLULAR);
+                TRANSPORT_CELLULAR);
 
         // The iface field of the returned stats should be null because getUidStatsForTransport
         // clears the interface field before it returns the result.
@@ -1532,8 +1520,80 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
         // getUidStatsForTransport(TRANSPORT_SATELLITE) is not supported
         assertThrows(IllegalArgumentException.class,
-                () -> mService.getUidStatsForTransport(NetworkCapabilities.TRANSPORT_SATELLITE));
+                () -> mService.getUidStatsForTransport(TRANSPORT_SATELLITE));
 
+    }
+
+    // This test demonstrates that a network identity with legacy type TYPE_MOBILE
+    // can represent different underlying physical transports (e.g., satellite or cellular).
+    // NetworkTemplate, using MATCH_MOBILE, can then differentiate these further
+    // by applying a transportTypes filter.
+    @Test
+    public void testGetSatelliteStats() throws Exception {
+        mockDefaultSettings();
+        final NetworkTemplate templateSatellite =
+                new NetworkTemplate.Builder()
+                        .setMeteredness(METERED_YES)
+                        .setSubscriberIds(Set.of(IMSI_1))
+                        .setTransportType(TRANSPORT_SATELLITE)
+                        .build();
+
+        final NetworkTemplate templateCellularOnly =
+                new NetworkTemplate.Builder()
+                        .setMeteredness(METERED_YES)
+                        .setSubscriberIds(Set.of(IMSI_1))
+                        .setTransportType(TRANSPORT_CELLULAR)
+                        .build();
+
+        // Initial state: Assert all relevant templates are empty
+        assertUidTotal(sTemplateImsi1, UID_RED, 0L, 0L, 0L, 0L, 0);
+        assertUidTotal(templateSatellite, UID_RED, 0L, 0L, 0L, 0L, 0);
+        assertUidTotal(templateCellularOnly, UID_RED, 0L, 0L, 0L, 0L, 0);
+
+        // 1. Bring up SATELLITE mobile network for IMSI_1
+        NetworkStateSnapshot satelliteState = buildSatelliteMobileState(IMSI_1);
+
+        mService.notifyNetworkStatus(NETWORKS_MOBILE, new NetworkStateSnapshot[]{satelliteState},
+                getActiveIface(satelliteState), new UnderlyingNetworkInfo[0]);
+        setMobileRatTypeAndWaitForIdle(TelephonyManager.NETWORK_TYPE_LTE);
+
+        // Record 100 bytes of data on the satellite network for UID_RED
+        incrementCurrentTime(HOUR_IN_MILLIS);
+        mockNetworkStatsUidDetail(new NetworkStats(getElapsedRealtime(), 1)
+                .insertEntry(TEST_IFACE, UID_RED, SET_DEFAULT, TAG_NONE, METERED_YES, ROAMING_NO,
+                        DEFAULT_NETWORK_YES, 100L, 10L, 100L, 10L, 0L));
+        forcePollAndWaitForIdle();
+
+        // Verify data attribution for SATELLITE
+        // sTemplateImsi1 (general mobile) should count satellite data.
+        assertUidTotal(sTemplateImsi1, UID_RED, 100L, 10L, 100L, 10L, 0);
+        // sTemplateMobileSatelliteImsi1 (satellite specific) should count satellite data.
+        assertUidTotal(templateSatellite, UID_RED, 100L, 10L, 100L, 10L, 0);
+        // templateCellularOnly (cellular specific) should NOT count satellite data.
+        assertUidTotal(templateCellularOnly, UID_RED, 0L, 0L, 0L, 0L, 0);
+
+        // 2. Switch to CELLULAR mobile network for IMSI_1 on the same interface
+        NetworkStateSnapshot cellularState = buildMobileState(IMSI_1);
+
+        mService.notifyNetworkStatus(NETWORKS_MOBILE, new NetworkStateSnapshot[]{cellularState},
+                getActiveIface(cellularState), new UnderlyingNetworkInfo[0]);
+        // Mocking UID details to reflect total traffic on the interface since boot/last poll.
+        // Previous satellite data (100B) + new cellular data (200B) = 300B total on iface.
+        incrementCurrentTime(HOUR_IN_MILLIS);
+        mockNetworkStatsUidDetail(new NetworkStats(getElapsedRealtime(), 1)
+                .insertEntry(TEST_IFACE, UID_RED, SET_DEFAULT, TAG_NONE, METERED_YES, ROAMING_NO,
+                        DEFAULT_NETWORK_YES, 300L, 30L, 300L, 30L, 0L)); // 100sat + 200cell
+        forcePollAndWaitForIdle();
+
+        // Verify data attribution after CELLULAR usage
+        // sTemplateImsi1 (general mobile) should count cumulative data (satellite + cellular).
+        // (100 previous + 200 new = 300 total)
+        assertUidTotal(sTemplateImsi1, UID_RED, 300L, 30L, 300L, 30L, 0);
+        // sTemplateMobileSatelliteImsi1 should still only have the satellite data.
+        assertUidTotal(templateSatellite, UID_RED, 100L, 10L, 100L, 10L, 0);
+        // templateCellularOnly should now have the new cellular data (200B).
+        // (Current total on iface 300B - previous total on iface before this poll 100B = 200B)
+        assertUidTotal(templateCellularOnly, UID_RED, 200L, 20L, 200L, 20L, 0);
     }
 
     @Test
@@ -1641,7 +1701,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         mockDefaultSettings();
         NetworkStateSnapshot[] states =
             new NetworkStateSnapshot[] {buildStateOfTransport(
-                    NetworkCapabilities.TRANSPORT_CELLULAR, TYPE_MOBILE,
+                    TRANSPORT_CELLULAR, TYPE_MOBILE,
                     TEST_IFACE,  IMSI_1, null /* wifiNetworkKey */,
                     false /* isTemporarilyNotMetered */, true /* isRoaming */)};
         mockNetworkStatsSummary(buildEmptyStats());
@@ -2494,102 +2554,6 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         assertTrue(mService.getRateLimitCacheConfig().isCacheEnabled);
     }
 
-    @FeatureFlag(name = TRAFFICSTATS_CLIENT_RATE_LIMIT_CACHE_ENABLED_FLAG)
-    @FeatureFlag(name = TRAFFICSTATS_SERVICE_RATE_LIMIT_CACHE_ENABLED_FLAG)
-    @Test
-    public void testTrafficStatsRateLimitCache_clientCacheEnabledDisableServiceCache()
-            throws Exception {
-        mDeps.setChangeEnabled(ENABLE_TRAFFICSTATS_RATE_LIMIT_CACHE, true);
-        doTestTrafficStatsRateLimitCache(false /* expectCached */);
-    }
-
-    @FeatureFlag(name = TRAFFICSTATS_SERVICE_RATE_LIMIT_CACHE_ENABLED_FLAG, enabled = false)
-    @Test
-    public void testTrafficStatsRateLimitCache_disabledWithCompatChangeEnabled() throws Exception {
-        mDeps.setChangeEnabled(ENABLE_TRAFFICSTATS_RATE_LIMIT_CACHE, true);
-        doTestTrafficStatsRateLimitCache(false /* expectCached */);
-    }
-
-    @FeatureFlag(name = TRAFFICSTATS_SERVICE_RATE_LIMIT_CACHE_ENABLED_FLAG)
-    @Test
-    public void testTrafficStatsRateLimitCache_enabledWithCompatChangeEnabled() throws Exception {
-        mDeps.setChangeEnabled(ENABLE_TRAFFICSTATS_RATE_LIMIT_CACHE, true);
-        doTestTrafficStatsRateLimitCache(true /* expectCached */);
-    }
-
-    @FeatureFlag(name = TRAFFICSTATS_SERVICE_RATE_LIMIT_CACHE_ENABLED_FLAG, enabled = false)
-    @Test
-    public void testTrafficStatsRateLimitCache_disabledWithCompatChangeDisabled() throws Exception {
-        mDeps.setChangeEnabled(ENABLE_TRAFFICSTATS_RATE_LIMIT_CACHE, false);
-        doTestTrafficStatsRateLimitCache(false /* expectCached */);
-    }
-
-    @FeatureFlag(name = TRAFFICSTATS_SERVICE_RATE_LIMIT_CACHE_ENABLED_FLAG)
-    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-    @Test
-    public void testTrafficStatsRateLimitCache_enabledWithCompatChangeDisabled_belowV()
-            throws Exception {
-        mDeps.setChangeEnabled(ENABLE_TRAFFICSTATS_RATE_LIMIT_CACHE, false);
-        doTestTrafficStatsRateLimitCache(false /* expectCached */);
-    }
-
-    @FeatureFlag(name = TRAFFICSTATS_SERVICE_RATE_LIMIT_CACHE_ENABLED_FLAG)
-    @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-    @Test
-    public void testTrafficStatsRateLimitCache_enabledWithCompatChangeDisabled_vOrAbove()
-            throws Exception {
-        mDeps.setChangeEnabled(ENABLE_TRAFFICSTATS_RATE_LIMIT_CACHE, false);
-        doTestTrafficStatsRateLimitCache(true /* expectCached */);
-    }
-
-    private void doTestTrafficStatsRateLimitCache(boolean expectCached) throws Exception {
-        mockDefaultSettings();
-        // Calling uid is not injected into the service, use the real uid to pass the caller check.
-        final int myUid = Process.myUid();
-        mockTrafficStatsValues(64L, 3L, 1024L, 8L);
-        assertTrafficStatsValues(TEST_IFACE, myUid, 64L, 3L, 1024L, 8L);
-
-        // Verify the values are cached.
-        incrementCurrentTime(DEFAULT_TRAFFIC_STATS_CACHE_EXPIRY_DURATION_MS / 2);
-        mockTrafficStatsValues(65L, 8L, 1055L, 9L);
-        if (expectCached) {
-            assertTrafficStatsValues(TEST_IFACE, myUid, 64L, 3L, 1024L, 8L);
-        } else {
-            assertTrafficStatsValues(TEST_IFACE, myUid, 65L, 8L, 1055L, 9L);
-        }
-
-        // Verify the values are updated after cache expiry.
-        incrementCurrentTime(DEFAULT_TRAFFIC_STATS_CACHE_EXPIRY_DURATION_MS);
-        assertTrafficStatsValues(TEST_IFACE, myUid, 65L, 8L, 1055L, 9L);
-    }
-
-    private void mockTrafficStatsValues(long rxBytes, long rxPackets,
-            long txBytes, long txPackets) {
-        // In practice, keys and operations are not used and filled with default values when
-        // returned by JNI layer.
-        final NetworkStats.Entry entry = new NetworkStats.Entry(IFACE_ALL, UID_ALL, SET_DEFAULT,
-                TAG_NONE, METERED_NO, ROAMING_NO, DEFAULT_NETWORK_NO,
-                rxBytes, rxPackets, txBytes, txPackets, 0L);
-        mDeps.setNativeStat(entry);
-    }
-
-    // Assert for 3 different API return values respectively.
-    private void assertTrafficStatsValues(String iface, int uid, long rxBytes, long rxPackets,
-            long txBytes, long txPackets) {
-        assertStatsResultEquals(mService.getTotalStats(), rxBytes, rxPackets, txBytes, txPackets);
-        assertStatsResultEquals(mService.getIfaceStats(iface), rxBytes, rxPackets, txBytes,
-                txPackets);
-        assertStatsResultEquals(mService.getUidStats(uid), rxBytes, rxPackets, txBytes, txPackets);
-    }
-
-    private void assertStatsResultEquals(StatsResult stats, long rxBytes, long rxPackets,
-            long txBytes, long txPackets) {
-        assertEquals(rxBytes, stats.rxBytes);
-        assertEquals(rxPackets, stats.rxPackets);
-        assertEquals(txBytes, stats.txBytes);
-        assertEquals(txPackets, stats.txPackets);
-    }
-
     private void assertShouldRunComparison(boolean expected, boolean isDebuggable) {
         assertEquals("shouldRunComparison (debuggable=" + isDebuggable + "): ",
                 expected, mService.shouldRunComparison());
@@ -2603,7 +2567,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         return new NetworkStatsRecorder(new FileRotator(
                 directory, prefix, config.rotateAgeMillis, config.deleteAgeMillis),
                 observer, dropBox, prefix, config.bucketDuration, includeTags, wipeOnError,
-                false /* useFastDataInput */, directory);
+                false /* useFastDataInput */, true /* storeTransportTypes */, directory);
     }
 
     private NetworkStatsCollection getLegacyCollection(String prefix, boolean includeTags) {
@@ -2821,13 +2785,13 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     }
 
     private static NetworkStateSnapshot buildMobileState(String subscriberId) {
-        return buildStateOfTransport(NetworkCapabilities.TRANSPORT_CELLULAR, TYPE_MOBILE,
+        return buildStateOfTransport(TRANSPORT_CELLULAR, TYPE_MOBILE,
                 TEST_IFACE, subscriberId, null /* wifiNetworkKey */,
                 false /* isTemporarilyNotMetered */, false /* isRoaming */);
     }
 
     private static NetworkStateSnapshot buildSatelliteMobileState(String subscriberId) {
-        return buildStateOfTransport(NetworkCapabilities.TRANSPORT_SATELLITE, TYPE_MOBILE,
+        return buildStateOfTransport(TRANSPORT_SATELLITE, TYPE_MOBILE,
                 TEST_IFACE, subscriberId, null /* wifiNetworkKey */,
                 false /* isTemporarilyNotMetered */, false /* isRoaming */);
     }
@@ -2871,7 +2835,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         for (int nc : oemNetCapabilities) {
             capabilities.setCapability(nc, true);
         }
-        capabilities.addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR);
+        capabilities.addTransportType(TRANSPORT_CELLULAR);
         return new NetworkStateSnapshot(MOBILE_NETWORK, capabilities, prop, subscriberId,
                 TYPE_MOBILE);
     }
@@ -2884,7 +2848,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         capabilities.setCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED, true);
         capabilities.setCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING, true);
         capabilities.setCapability(NetworkCapabilities.NET_CAPABILITY_IMS, true);
-        capabilities.addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR);
+        capabilities.addTransportType(TRANSPORT_CELLULAR);
         capabilities.setNetworkSpecifier(new TelephonyNetworkSpecifier(subId));
         return new NetworkStateSnapshot(
                 MOBILE_NETWORK, capabilities, prop, subscriberId, TYPE_MOBILE);
@@ -2938,22 +2902,22 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
     private void initBpfMapsWithTagData(int uid) throws ErrnoException {
         // key needs to be unique, use some offset from uid.
-        mCookieTagMap.insertEntry(new CookieTagMapKey(1000 + uid), new CookieTagMapValue(uid, 1));
-        mCookieTagMap.insertEntry(new CookieTagMapKey(2000 + uid), new CookieTagMapValue(uid, 2));
+        mCookieTagMap.insertEntry(new S64(1000 + uid), new CookieTagMapValue(uid, 1));
+        mCookieTagMap.insertEntry(new S64(2000 + uid), new CookieTagMapValue(uid, 2));
 
         mStatsMapA.insertEntry(new StatsMapKey(uid, 1, 0, 10), new StatsMapValue(5, 5000, 3, 3000));
         mStatsMapA.insertEntry(new StatsMapKey(uid, 2, 0, 10), new StatsMapValue(5, 5000, 3, 3000));
 
         mStatsMapB.insertEntry(new StatsMapKey(uid, 1, 0, 10), new StatsMapValue(0, 0, 0, 0));
 
-        mAppUidStatsMap.insertEntry(new UidStatsMapKey(uid), new StatsMapValue(10, 10000, 6, 6000));
+        mAppUidStatsMap.insertEntry(new S32(uid), new StatsMapValue(10, 10000, 6, 6000));
 
         mUidCounterSetMap.insertEntry(new S32(uid), new U8((short) 1));
 
         assertTrue(cookieTagMapContainsUid(uid));
         assertTrue(statsMapContainsUid(mStatsMapA, uid));
         assertTrue(statsMapContainsUid(mStatsMapB, uid));
-        assertTrue(mAppUidStatsMap.containsKey(new UidStatsMapKey(uid)));
+        assertTrue(mAppUidStatsMap.containsKey(new S32(uid)));
         assertTrue(mUidCounterSetMap.containsKey(new S32(uid)));
     }
 
@@ -2970,14 +2934,14 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         assertFalse(cookieTagMapContainsUid(UID_BLUE));
         assertFalse(statsMapContainsUid(mStatsMapA, UID_BLUE));
         assertFalse(statsMapContainsUid(mStatsMapB, UID_BLUE));
-        assertFalse(mAppUidStatsMap.containsKey(new UidStatsMapKey(UID_BLUE)));
+        assertFalse(mAppUidStatsMap.containsKey(new S32(UID_BLUE)));
         assertFalse(mUidCounterSetMap.containsKey(new S32(UID_BLUE)));
 
         // assert that UID_RED related tag data is still in the maps.
         assertTrue(cookieTagMapContainsUid(UID_RED));
         assertTrue(statsMapContainsUid(mStatsMapA, UID_RED));
         assertTrue(statsMapContainsUid(mStatsMapB, UID_RED));
-        assertTrue(mAppUidStatsMap.containsKey(new UidStatsMapKey(UID_RED)));
+        assertTrue(mAppUidStatsMap.containsKey(new S32(UID_RED)));
         assertTrue(mUidCounterSetMap.containsKey(new S32(UID_RED)));
     }
 
@@ -3022,14 +2986,14 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         initBpfMapsWithTagData(UID_BLUE);
 
         final String dump = getDump(new String[]{DUMPSYS_BPF_RAW_MAP, DUMPSYS_COOKIE_TAG_MAP});
-        Map<CookieTagMapKey, CookieTagMapValue> cookieTagMap = parseBpfRawMap(
-                CookieTagMapKey.class, CookieTagMapValue.class, dump);
+        Map<S64, CookieTagMapValue> cookieTagMap = parseBpfRawMap(
+                S64.class, CookieTagMapValue.class, dump);
 
-        final CookieTagMapValue val1 = cookieTagMap.get(new CookieTagMapKey(2002));
+        final CookieTagMapValue val1 = cookieTagMap.get(new S64(2002));
         assertEquals(1, val1.tag);
         assertEquals(1002, val1.uid);
 
-        final CookieTagMapValue val2 = cookieTagMap.get(new CookieTagMapKey(3002));
+        final CookieTagMapValue val2 = cookieTagMap.get(new S64(3002));
         assertEquals(2, val2.tag);
         assertEquals(1002, val2.uid);
     }

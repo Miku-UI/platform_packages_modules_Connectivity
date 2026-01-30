@@ -60,37 +60,60 @@ cc_library_headers {
     ],
 }
 
+cc_library_headers {
+    name: "bpf_prog_mainline_headers",
+    native_bridge_supported: true,
+    export_include_dirs: ["include"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+    sdk_version: "30",
+    min_sdk_version: "30",
+    // This header is for internal use within the tethering module.
+    // Platform code should use bpf_prog_platform_headers instead.
+    visibility: [
+        "//packages/modules/Connectivity/bpf:__subpackages__",
+    ],
+    apex_available: [
+        "com.android.tethering",
+    ],
+}
+
 //
 // bpf kernel programs
 //
 bpf {
+    name: "clatd.o",
+    srcs: ["clatd.c"],
+    include_dirs: ["packages/modules/Connectivity/bpf/progs/include"],
+    sub_dir: "mainline",
+}
+
+bpf {
     name: "dscpPolicy.o",
     srcs: ["dscpPolicy.c"],
-    sub_dir: "net_shared",
+    include_dirs: ["packages/modules/Connectivity/bpf/progs/include"],
+    sub_dir: "mainline",
+}
+
+bpf {
+    name: "netd.o",
+    srcs: ["netd.c"],
+    include_dirs: ["packages/modules/Connectivity/bpf/progs/include"],
+    sub_dir: "mainline",
 }
 
 bpf {
     name: "offload.o",
     srcs: ["offload.c"],
-    sub_dir: "tethering",
+    include_dirs: ["packages/modules/Connectivity/bpf/progs/include"],
+    sub_dir: "mainline",
 }
 
 bpf {
     name: "test.o",
     srcs: ["test.c"],
-    sub_dir: "tethering",
-}
-
-bpf {
-    name: "clatd.o",
-    srcs: ["clatd.c"],
-    sub_dir: "net_shared",
-}
-
-bpf {
-    // WARNING: Android T's non-updatable netd depends on 'netd' string for xt_bpf programs it loads
-    name: "netd.o",
-    srcs: ["netd.c"],
-    // WARNING: Android T's non-updatable netd depends on 'netd_shared' string for xt_bpf programs
-    sub_dir: "netd_shared",
+    include_dirs: ["packages/modules/Connectivity/bpf/progs/include"],
+    sub_dir: "mainline",
 }

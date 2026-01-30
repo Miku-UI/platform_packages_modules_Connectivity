@@ -24,7 +24,6 @@ import android.os.Handler;
 import android.os.ParcelFileDescriptor;
 import android.system.ErrnoException;
 import android.system.Os;
-import android.system.OsConstants;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -74,10 +73,6 @@ public class L2capPacketForwarder {
          * bytes[] must be of size >= off + len.
          */
         void write(byte[] bytes, int off, int len) throws IOException;
-        /** Disallow further receptions, shutdown(fd, SHUT_RD) */
-        void shutdownRead();
-        /** Disallow further transmissions, shutdown(fd, SHUT_WR) */
-        void shutdownWrite();
         /** Close the fd */
         void close();
     }
@@ -125,30 +120,6 @@ public class L2capPacketForwarder {
         }
 
         @Override
-        public void shutdownRead() {
-            // BluetoothSocket does not expose methods to shutdown read / write individually;
-            // however, BluetoothSocket#close() shuts down both read and write and is safe to be
-            // called multiple times from any thread.
-            try {
-                mSocket.close();
-            } catch (IOException e) {
-                Log.w(TAG, "shutdownRead: Failed to close BluetoothSocket", e);
-            }
-        }
-
-        @Override
-        public void shutdownWrite() {
-            // BluetoothSocket does not expose methods to shutdown read / write individually;
-            // however, BluetoothSocket#close() shuts down both read and write and is safe to be
-            // called multiple times from any thread.
-            try {
-                mSocket.close();
-            } catch (IOException e) {
-                Log.w(TAG, "shutdownWrite: Failed to close BluetoothSocket", e);
-            }
-        }
-
-        @Override
         public void close() {
             // BluetoothSocket#close() is safe to be called multiple times.
             try {
@@ -160,10 +131,10 @@ public class L2capPacketForwarder {
     }
 
     @VisibleForTesting
-    public static class FdWrapper implements IReadWriteFd {
+    public static class TunWrapper implements IReadWriteFd {
         private final ParcelFileDescriptor mFd;
 
-        public FdWrapper(ParcelFileDescriptor fd) {
+        public TunWrapper(ParcelFileDescriptor fd) {
             mFd = fd;
         }
 
@@ -187,24 +158,6 @@ public class L2capPacketForwarder {
                 Os.write(mFd.getFileDescriptor(), bytes, off, len);
             } catch (ErrnoException e) {
                 throw new IOException(e);
-            }
-        }
-
-        @Override
-        public void shutdownRead() {
-            try {
-                Os.shutdown(mFd.getFileDescriptor(), OsConstants.SHUT_RD);
-            } catch (ErrnoException e) {
-                Log.w(TAG, "shutdownRead: Failed to shutdown(fd, SHUT_RD)", e);
-            }
-        }
-
-        @Override
-        public void shutdownWrite() {
-            try {
-                Os.shutdown(mFd.getFileDescriptor(), OsConstants.SHUT_WR);
-            } catch (ErrnoException e) {
-                Log.w(TAG, "shutdownWrite: Failed to shutdown(fd, SHUT_WR)", e);
             }
         }
 
@@ -274,7 +227,10 @@ public class L2capPacketForwarder {
 
                     mWriteFd.write(mBuffer, 0 /*off*/, readBytes);
                 } catch (IOException|BufferUnderflowException e) {
-                    Log.e(mLogTag, "L2capThread exception", e);
+                    // This exception almost always indicates that the other side disconnected.
+                    // Unfortunately, there is no way to distinguish between an EOF triggered by
+                    // some disconnect or some actual error.
+                    Log.w(mLogTag, "L2capThread exception", e);
                     // Tear down the network on any error.
                     mIsRunning = false;
                     // Notify provider that forwarding has stopped.
@@ -283,16 +239,14 @@ public class L2capPacketForwarder {
             }
         }
 
-        public void tearDown() {
+        public void requestStop() {
             mIsRunning = false;
-            mReadFd.shutdownRead();
-            mWriteFd.shutdownWrite();
         }
     }
 
     public L2capPacketForwarder(Handler handler, ParcelFileDescriptor tunFd, BluetoothSocket socket,
             boolean compressHdrs, ICallback cb) {
-        this(handler, new FdWrapper(tunFd), new BluetoothSocketWrapper(socket), compressHdrs, cb);
+        this(handler, new TunWrapper(tunFd), new BluetoothSocketWrapper(socket), compressHdrs, cb);
     }
 
     @VisibleForTesting
@@ -316,14 +270,10 @@ public class L2capPacketForwarder {
      * This operation closes both the passed tun fd and BluetoothSocket.
      **/
     public void tearDown() {
-        // Destroying both threads first guarantees that both read and write side of FD have been
-        // shutdown.
-        mIngressThread.tearDown();
-        mEgressThread.tearDown();
+        mIngressThread.requestStop();
+        mEgressThread.requestStop();
 
-        // In order to interrupt a blocking read on the BluetoothSocket, the BluetoothSocket must be
-        // closed (which triggers shutdown()). This means, the BluetoothSocket must be closed inside
-        // L2capPacketForwarder. Tear down the tun fd alongside it for consistency.
+        // BluetoothSocket#close() as well as closing the tun fd interrupts any blocking operations.
         mTunFd.close();
         mL2capFd.close();
 

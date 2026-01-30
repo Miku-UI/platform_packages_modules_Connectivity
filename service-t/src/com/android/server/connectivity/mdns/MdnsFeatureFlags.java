@@ -17,6 +17,9 @@ package com.android.server.connectivity.mdns;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.os.Build;
+
+import androidx.annotation.ChecksSdkIntAtLeast;
 
 /**
  * The class that contains mDNS feature flags;
@@ -87,6 +90,21 @@ public class MdnsFeatureFlags {
     public static final String NSD_USE_SHORT_HOSTNAMES = "nsd_use_short_hostnames";
 
     /**
+     * A feature flag to control whether to advertise the temporary IPv6 addresses should be
+     */
+    public static final String NSD_IGNORE_TEMPORARY_IPV6_ADDRESSES =
+            "nsd_ignore_temporary_ipv6_addresses";
+
+    /**
+
+     * A feature flag to control whether to only flush address records when another address record
+     * with the same name, rrtype and rrclass is received (as per RFC6762 10.2), instead of flushing
+     * all address records (A and AAAA) for the same name only.
+     */
+    public static final String NSD_CACHE_FLUSH_PER_ADDRESS_TYPE =
+            "nsd_cache_flush_per_address_type";
+
+    /**
      * A feature flag to control the retention time for cached services.
      *
      * <p> Making the retention time configurable allows for testing and future adjustments.
@@ -96,9 +114,22 @@ public class MdnsFeatureFlags {
     public static final int DEFAULT_CACHED_SERVICES_RETENTION_TIME_MILLISECONDS = 10000;
 
     /**
+     * Tag indicating that socket tagging should not be done.
+     *
+     * <p>Corresponds to the same value TrafficStats uses to for "no tag".
+     */
+    public static final int MDNS_SOCKET_THREAD_STATS_TAG_NONE = -1;
+
+    /**
      * A feature flag to control whether the accurate delay callback should be enabled.
      */
     public static final String NSD_ACCURATE_DELAY_CALLBACK = "nsd_accurate_delay_callback";
+
+    /**
+     * A feature flag to control whether the optimized expired service removal should be enabled.
+     */
+    public static final String NSD_OPTIMIZED_EXPIRED_SERVICE_REMOVAL =
+            "nsd_optimized_expired_service_removal";
 
     // Flag for offload feature
     public final boolean mIsMdnsOffloadFeatureEnabled;
@@ -138,6 +169,27 @@ public class MdnsFeatureFlags {
 
     // Flag to use shorter (16 characters + .local) hostnames
     public final boolean mIsShortHostnamesEnabled;
+
+    // Flag to enable guessing the Network of received packets in the legacy MdnsSocketClient.
+    public final boolean mIsSocketClientNetworkGuessingEnabled;
+
+    // Flag to only flush address records when another address record with the same name, rrtype and
+    // rrclass is received
+    public final boolean mIsCacheFlushPerAddressTypeEnabled;
+
+    // Flag for optimized expired service removal
+    public final boolean mIsOptimizedExpiredServiceRemovalEnabled;
+
+    // Flag for ignoring temporary IPv6 addresses in advertising
+    public final boolean mIsIgnoreTemporaryIPv6AddressesEnabled;
+
+    // Flag for selective mDns response offload
+    // This feature can only be enabled if the OffloadServiceInfo system API is available
+    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.TIRAMISU)
+    public final boolean mIsSelectiveMdnsResponseOffloadEnabled;
+
+    // Thread stats tag for MdnsSocketClient
+    public final int mMdnsSocketThreadStatsTag;
 
     @Nullable
     private final FlagOverrideProvider mOverrideProvider;
@@ -247,6 +299,15 @@ public class MdnsFeatureFlags {
     }
 
     /**
+     * Indicates whether {@link #NSD_OPTIMIZED_EXPIRED_SERVICE_REMOVAL} is enabled, including for
+     * testing.
+     */
+    public boolean isOptimizedExpiredServiceRemovalEnabled() {
+        return mIsOptimizedExpiredServiceRemovalEnabled
+                || isForceEnabledForTest(NSD_OPTIMIZED_EXPIRED_SERVICE_REMOVAL);
+    }
+
+    /**
      * The constructor for {@link MdnsFeatureFlags}.
      */
     public MdnsFeatureFlags(boolean isOffloadFeatureEnabled,
@@ -262,6 +323,12 @@ public class MdnsFeatureFlags {
             long cachedServicesRetentionTime,
             boolean isAccurateDelayCallbackEnabled,
             boolean isShortHostnamesEnabled,
+            boolean isSocketClientNetworkGuessingEnabled,
+            boolean isCacheFlushPerAddressTypeEnabled,
+            boolean isOptimizedExpiredServiceRemovalEnabled,
+            boolean isIgnoreTemporaryIPv6AddressesEnabled,
+            boolean isSelectiveMdnsResponseOffloadEnabled,
+            int mdnsSocketThreadStatsTag,
             @Nullable FlagOverrideProvider overrideProvider) {
         mIsMdnsOffloadFeatureEnabled = isOffloadFeatureEnabled;
         mIncludeInetAddressRecordsInProbing = includeInetAddressRecordsInProbing;
@@ -276,6 +343,12 @@ public class MdnsFeatureFlags {
         mCachedServicesRetentionTime = cachedServicesRetentionTime;
         mIsAccurateDelayCallbackEnabled = isAccurateDelayCallbackEnabled;
         mIsShortHostnamesEnabled = isShortHostnamesEnabled;
+        mIsSocketClientNetworkGuessingEnabled = isSocketClientNetworkGuessingEnabled;
+        mIsCacheFlushPerAddressTypeEnabled = isCacheFlushPerAddressTypeEnabled;
+        mIsOptimizedExpiredServiceRemovalEnabled = isOptimizedExpiredServiceRemovalEnabled;
+        mMdnsSocketThreadStatsTag = mdnsSocketThreadStatsTag;
+        mIsIgnoreTemporaryIPv6AddressesEnabled = isIgnoreTemporaryIPv6AddressesEnabled;
+        mIsSelectiveMdnsResponseOffloadEnabled = isSelectiveMdnsResponseOffloadEnabled;
         mOverrideProvider = overrideProvider;
     }
 
@@ -301,6 +374,12 @@ public class MdnsFeatureFlags {
         private long mCachedServicesRetentionTime;
         private boolean mIsAccurateDelayCallbackEnabled;
         private boolean mIsShortHostnamesEnabled;
+        private boolean mIsSocketClientNetworkGuessingEnabled;
+        private boolean mIsCacheFlushPerAddressTypeEnabled;
+        private boolean mIsOptimizedExpiredServiceRemovalEnabled;
+        private boolean mIsIgnoreTemporaryIPv6AddressesEnabled;
+        private boolean mIsSelectiveMdnsResponseOffloadEnabled;
+        private int mMdnsSocketThreadStatsTag;
         private FlagOverrideProvider mOverrideProvider;
 
         /**
@@ -320,7 +399,24 @@ public class MdnsFeatureFlags {
             mCachedServicesRetentionTime = DEFAULT_CACHED_SERVICES_RETENTION_TIME_MILLISECONDS;
             mIsAccurateDelayCallbackEnabled = false;
             mIsShortHostnamesEnabled = true; // Default enabled.
+            mIsSocketClientNetworkGuessingEnabled = false;
+            mIsCacheFlushPerAddressTypeEnabled = true; // Default enabled.
+            mIsOptimizedExpiredServiceRemovalEnabled = false;
+            mIsIgnoreTemporaryIPv6AddressesEnabled = true; // Default enabled.
+            mIsSelectiveMdnsResponseOffloadEnabled = false;
+            mMdnsSocketThreadStatsTag = MDNS_SOCKET_THREAD_STATS_TAG_NONE;
             mOverrideProvider = null;
+        }
+
+        /**
+         * Set whether the temporary IPv6 addresses should be ignored.
+         *
+         * @see #NSD_IGNORE_TEMPORARY_IPV6_ADDRESSES
+         */
+        public Builder setIsIgnoreTemporaryIPv6AddressesEnabled(
+                boolean isIgnoreTemporaryIPv6AddressesEnabled) {
+            mIsIgnoreTemporaryIPv6AddressesEnabled = isIgnoreTemporaryIPv6AddressesEnabled;
+            return this;
         }
 
         /**
@@ -466,6 +562,56 @@ public class MdnsFeatureFlags {
         }
 
         /**
+         * Set whether MdnsSocketClient should try to guess the Network of received packets.
+         */
+        public Builder setIsSocketClientNetworkGuessingEnabled(
+                boolean isSocketClientNetworkGuessingEnabled) {
+            mIsSocketClientNetworkGuessingEnabled = isSocketClientNetworkGuessingEnabled;
+            return this;
+        }
+
+        /**
+         * Set whether the cache flush per address type is enabled.
+         *
+         * @see #NSD_CACHE_FLUSH_PER_ADDRESS_TYPE
+         */
+        public Builder setIsCacheFlushPerAddressTypeEnabled(
+                boolean isCacheFlushPerAddressTypeEnabled) {
+            mIsCacheFlushPerAddressTypeEnabled = isCacheFlushPerAddressTypeEnabled;
+            return this;
+        }
+
+        /**
+         * Set whether the optimized expired service removal is enabled.
+         *
+         * @see #NSD_OPTIMIZED_EXPIRED_SERVICE_REMOVAL
+         */
+        public Builder setIsOptimizedExpiredServiceRemovalEnabled(
+                boolean isOptimizedExpiredServiceRemovalEnabled) {
+            mIsOptimizedExpiredServiceRemovalEnabled = isOptimizedExpiredServiceRemovalEnabled;
+            return this;
+        }
+
+        /**
+         * Set the thread stats tag to use in {@link MdnsSocketClient}.
+         */
+        public Builder setMdnsSocketThreadStatsTag(int mdnsSocketThreadStatsTag) {
+            mMdnsSocketThreadStatsTag = mdnsSocketThreadStatsTag;
+            return this;
+        }
+
+        /**
+         * Set whether the selective mDns response offload is enabled.
+         *
+         * @see #NSD_SELECTIVE_MDNS_RESPONSE_OFFLOAD
+         */
+        public Builder setIsSelectiveMdnsResponseOffloadEnabled(
+                boolean isSelectiveMdnsResponseOffloadEnabled) {
+            mIsSelectiveMdnsResponseOffloadEnabled = isSelectiveMdnsResponseOffloadEnabled;
+            return this;
+        }
+
+        /**
          * Builds a {@link MdnsFeatureFlags} with the arguments supplied to this builder.
          */
         public MdnsFeatureFlags build() {
@@ -482,6 +628,12 @@ public class MdnsFeatureFlags {
                     mCachedServicesRetentionTime,
                     mIsAccurateDelayCallbackEnabled,
                     mIsShortHostnamesEnabled,
+                    mIsSocketClientNetworkGuessingEnabled,
+                    mIsCacheFlushPerAddressTypeEnabled,
+                    mIsOptimizedExpiredServiceRemovalEnabled,
+                    mIsIgnoreTemporaryIPv6AddressesEnabled,
+                    mIsSelectiveMdnsResponseOffloadEnabled,
+                    mMdnsSocketThreadStatsTag,
                     mOverrideProvider);
         }
     }

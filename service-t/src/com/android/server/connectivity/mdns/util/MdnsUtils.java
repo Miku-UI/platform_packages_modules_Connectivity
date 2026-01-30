@@ -22,13 +22,17 @@ import static com.android.server.connectivity.mdns.MdnsConstants.FLAG_TRUNCATED;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresApi;
 import android.net.Network;
+import android.net.nsd.OffloadEngine;
+import android.net.nsd.OffloadServiceInfo;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.ArraySet;
 import android.util.Pair;
 
 import com.android.net.module.util.CollectionUtils;
+import com.android.net.module.util.DnsUtils;
 import com.android.server.connectivity.mdns.MdnsConstants;
 import com.android.server.connectivity.mdns.MdnsInetAddressRecord;
 import com.android.server.connectivity.mdns.MdnsPacket;
@@ -36,6 +40,7 @@ import com.android.server.connectivity.mdns.MdnsPacketWriter;
 import com.android.server.connectivity.mdns.MdnsRecord;
 import com.android.server.connectivity.mdns.MdnsResponse;
 import com.android.server.connectivity.mdns.MdnsServiceInfo;
+import com.android.server.connectivity.mdns.MdnsServiceTypeClient;
 
 import java.io.IOException;
 import java.net.DatagramPacket;
@@ -51,6 +56,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -342,10 +348,8 @@ public class MdnsUtils {
             throw new IllegalStateException(
                     "mDNS response must have non-null service instance name");
         }
-        List<String> textStrings = null;
         List<MdnsServiceInfo.TextEntry> textEntries = null;
         if (response.hasTextRecord()) {
-            textStrings = response.getTextRecord().getStrings();
             textEntries = response.getTextRecord().getEntries();
         }
         Instant now = Instant.now();
@@ -358,10 +362,66 @@ public class MdnsUtils {
                 port,
                 ipv4Addresses,
                 ipv6Addresses,
-                textStrings,
                 textEntries,
                 response.getInterfaceIndex(),
                 response.getNetwork(),
                 now.plusMillis(response.getMinRemainingTtl(elapsedRealtimeMillis)));
+    }
+
+    /**
+     * Checks if an MDNS response matches a given instance name and a collection of subtypes.
+     *
+     * <p>This method performs a case-insensitive comparison of the instance name and subtypes,
+     * respecting DNS conventions.
+     *
+     * @param response     The MDNS response to check.
+     * @param instanceName The instance name to match, or null to ignore instance name matching.
+     * @param subtypes     The collection of subtypes to match.
+     * @return {@code true} if the response matches the instance name and at least one of the
+     * specified subtypes (if any), {@code false} otherwise.
+     */
+    public static boolean responseMatchesInstanceNameAndSubtypes(@NonNull MdnsResponse response,
+            @Nullable String instanceName, @NonNull Collection<String> subtypes) {
+        final boolean matchesInstanceName = instanceName == null
+                // DNS is case-insensitive, so ignore case in the comparison
+                || DnsUtils.equalsIgnoreDnsCase(instanceName, response.getServiceInstanceName());
+
+        // If discovery is requiring some subtypes, the response must have one that matches a
+        // requested one.
+        final List<String> responseSubtypes = response.getSubtypes() == null
+                ? Collections.emptyList() : response.getSubtypes();
+        final boolean matchesSubtype = subtypes.size() == 0
+                || CollectionUtils.any(subtypes, requiredSub ->
+                CollectionUtils.any(responseSubtypes, actualSub ->
+                        DnsUtils.equalsIgnoreDnsCase(
+                                MdnsConstants.SUBTYPE_PREFIX + requiredSub, actualSub)));
+        return matchesInstanceName && matchesSubtype;
+    }
+
+    /**
+     * Creates an {@link OffloadServiceInfo} object from a
+     * {@link MdnsServiceTypeClient.FilterRepliesInfo} instance.
+     *
+     * This method facilitates the conversion of filtering criteria into a service information
+     * object suitable for offloading mechanisms.
+     *
+     * @param info The {@link MdnsServiceTypeClient.FilterRepliesInfo} containing the filtering
+     *             criteria.
+     * @return A new {@link OffloadServiceInfo} instance populated with data from the
+     *        {@code FilterRepliesInfo}.
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    public static OffloadServiceInfo createOffloadServiceInfoFromFilterReplies(
+            @NonNull MdnsServiceTypeClient.FilterRepliesInfo info) {
+        return new OffloadServiceInfo(
+                new OffloadServiceInfo.Key(info.serviceName, info.serviceType),
+                new ArrayList<>(info.subtypes),
+                info.hostname,
+                null /* offloadPayload */,
+                // Set the priority to 0 because APF will not prioritize some services. Instead, it
+                // would simply allow every mDNS reply to pass through if there are too many
+                // offloaded services, so there is no point in setting priorities.
+                0 /* priority */,
+                OffloadEngine.OFFLOAD_TYPE_FILTER_REPLIES);
     }
 }

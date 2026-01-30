@@ -123,6 +123,9 @@ public class Struct {
         EUI48,       // IEEE Extended Unique Identifier, a 48-bits long MAC address in network order
         Ipv4Address, // IPv4 address in network order
         Ipv6Address, // IPv6 address in network order
+        IpAddress,   // IP address in network order. IPv4 address is written to byte format as
+                     // v4-mapped-v6 address. IpAddress should be used over Ipv6Address when
+                     // the field wants to contain both v4 and v6 addresses.
     }
 
     /**
@@ -212,6 +215,9 @@ public class Struct {
             case Ipv6Address:
                 if (fieldType == Inet6Address.class) return;
                 break;
+            case IpAddress:
+                if (fieldType == InetAddress.class) return;
+                break;
             default:
                 throw new IllegalArgumentException("Unknown type" + annotation.type());
         }
@@ -254,6 +260,7 @@ public class Struct {
                 length = 4;
                 break;
             case Ipv6Address:
+            case IpAddress:
                 length = 16;
                 break;
             default:
@@ -442,6 +449,17 @@ public class Struct {
                     throw new IllegalArgumentException("illegal length of IP address", e);
                 }
                 break;
+            case IpAddress:
+                final byte[] ipAddress = new byte[16];
+                buf.get(ipAddress);
+                try {
+                    // InetAddress.getByAddress converts v4-mapped-v6 address to v4 address
+                    // internally and returns Inet4Address, otherwise returns Inet6Address.
+                    value = InetAddress.getByAddress(null /* host */, ipAddress);
+                } catch (UnknownHostException e) {
+                    throw new IllegalArgumentException("illegal length of IP address", e);
+                }
+                break;
             default:
                 throw new IllegalArgumentException("Unknown type:" + fieldInfo.annotation.type());
         }
@@ -532,6 +550,15 @@ public class Struct {
             case Ipv6Address:
                 final byte[] address = ((InetAddress) value).getAddress();
                 output.put(address);
+                break;
+            case IpAddress:
+                final InetAddress inetAddress;
+                if (value instanceof Inet4Address) {
+                    inetAddress = InetAddressUtils.v4MappedV6Address((Inet4Address) value);
+                } else {
+                    inetAddress = (InetAddress) value;
+                }
+                output.put(inetAddress.getAddress());
                 break;
             default:
                 throw new IllegalArgumentException("Unknown type:" + fieldInfo.annotation.type());
@@ -627,6 +654,17 @@ public class Struct {
         }
     }
 
+    /**
+     * Parse raw data from a byte array according to the pre-defined annotation rule and return
+     * the type-variable object which is subclass of Struct class.
+     * This assumes the raw data has the same byte order as the native order.
+     */
+    public static <T> T parse(final Class<T> clazz, final byte[] bytes) {
+        final ByteBuffer buf = ByteBuffer.wrap(bytes);
+        buf.order(ByteOrder.nativeOrder());
+        return parse(clazz, buf);
+    }
+
     private static int getSizeInternal(final FieldInfo[] fieldInfos) {
         int size = 0;
         for (FieldInfo fi : fieldInfos) {
@@ -679,9 +717,12 @@ public class Struct {
     /**
      * Convert the parsed Struct subclass object to byte array.
      *
+     * WARNING: Structs should use byteorder annotations on the field, rather than using
+     * legacyWriteToBytes. This method will be deleted in the future.
+     *
      * @param order indicate ByteBuffer is outputted as little-endian or big-endian.
      */
-    public final byte[] writeToBytes(final ByteOrder order) {
+    protected final byte[] legacyWriteToBytes(final ByteOrder order) {
         final FieldInfo[] fieldInfos = getClassFieldInfo(this.getClass());
         final byte[] output = new byte[getSizeInternal(fieldInfos)];
         final ByteBuffer buffer = ByteBuffer.wrap(output);
@@ -692,7 +733,7 @@ public class Struct {
 
     /** Convert the parsed Struct subclass object to byte array with native order. */
     public final byte[] writeToBytes() {
-        return writeToBytes(ByteOrder.nativeOrder());
+        return legacyWriteToBytes(ByteOrder.nativeOrder());
     }
 
     @Override
@@ -749,7 +790,8 @@ public class Struct {
             } else if (fieldInfos[i].annotation.type() == Type.ByteArray) {
                 sb.append("0x").append(HexDump.toHexString((byte[]) value));
             } else if (fieldInfos[i].annotation.type() == Type.Ipv4Address
-                    || fieldInfos[i].annotation.type() == Type.Ipv6Address) {
+                    || fieldInfos[i].annotation.type() == Type.Ipv6Address
+                    || fieldInfos[i].annotation.type() == Type.IpAddress) {
                 sb.append(((InetAddress) value).getHostAddress());
             } else {
                 sb.append(value.toString());
@@ -760,7 +802,7 @@ public class Struct {
     }
 
     /** A simple Struct which only contains a bool field. */
-    public static class Bool extends Struct {
+    public static class Bool extends LegacyStruct {
         @Struct.Field(order = 0, type = Struct.Type.Bool)
         public final boolean val;
 

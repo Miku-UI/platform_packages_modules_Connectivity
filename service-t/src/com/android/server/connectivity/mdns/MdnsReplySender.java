@@ -28,11 +28,13 @@ import android.os.Looper;
 import android.os.Message;
 import android.util.ArrayMap;
 import android.util.ArraySet;
+import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.net.module.util.SharedLog;
 import com.android.server.connectivity.mdns.util.MdnsUtils;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.Inet4Address;
@@ -52,7 +54,9 @@ import java.util.Set;
  */
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 public class MdnsReplySender {
-    private static final int MSG_SEND = 1;
+    @VisibleForTesting
+    static final int MSG_SEND = 1;
+    private static final String TAG = MdnsReplySender.class.getSimpleName();
     private static final int PACKET_NOT_SENT = 0;
     private static final int PACKET_SENT = 1;
 
@@ -95,10 +99,19 @@ public class MdnsReplySender {
         }
 
         /**
-         * @see Handler#removeMessages(int)
+         * @see Handler#removeEqualMessages(int, Object)
          */
-        public void removeMessages(@NonNull Handler handler, int what, @NonNull Object object) {
-            handler.removeMessages(what, object);
+        public void removeEqualMessages(@NonNull Handler handler, int what,
+                @NonNull Object object) {
+            handler.removeEqualMessages(what, object);
+        }
+
+        /**
+         * @see MdnsUtils#createRawDnsPacket(byte[], MdnsPacket)
+         */
+        public byte[] createRawDnsPacket(@NonNull byte[] buffer, @NonNull MdnsPacket packet)
+                throws IOException {
+            return MdnsUtils.createRawDnsPacket(buffer, packet);
         }
     }
 
@@ -146,7 +159,7 @@ public class MdnsReplySender {
         ensureRunningOnHandlerThread(mHandler);
 
         if (mMdnsFeatureFlags.isKnownAnswerSuppressionEnabled()) {
-            mDependencies.removeMessages(mHandler, MSG_SEND, reply.source);
+            mDependencies.removeEqualMessages(mHandler, MSG_SEND, reply.source);
 
             final MdnsReplyInfo queuingReply = mSrcReplies.remove(reply.source);
             final ArraySet<MdnsRecord> answers = new ArraySet<>();
@@ -210,9 +223,35 @@ public class MdnsReplySender {
             // Skip sending if the socket has not joined the v4/v6 group (there was no address)
             return PACKET_NOT_SENT;
         }
-        final byte[] outBuffer = MdnsUtils.createRawDnsPacket(mPacketCreationBuffer, packet);
+        final byte[] outBuffer = createRawDnsPacket(packet);
         mSocket.send(new DatagramPacket(outBuffer, 0, outBuffer.length, destination));
         return PACKET_SENT;
+    }
+
+    private byte[] createRawDnsPacket(MdnsPacket packet)
+            throws IOException {
+        try {
+            return mDependencies.createRawDnsPacket(mPacketCreationBuffer, packet);
+        } catch (EOFException e) {
+            // Try truncating the additional records if the packet is too large.
+            final MdnsPacket packetWithoutAdditionalRecords =
+                    new MdnsPacket(
+                            packet.transactionId,
+                            packet.flags,
+                            packet.questions,
+                            packet.answers,
+                            packet.authorityRecords,
+                            Collections.emptyList() /* additionalRecords */);
+            final byte[] outBuffer =
+                    mDependencies.createRawDnsPacket(
+                            mPacketCreationBuffer, packetWithoutAdditionalRecords);
+            // TODO: The packet may still be too large after truncating the additional records. We
+            // may need to further optimize this.
+            mSharedLog.e(
+                    "The message is too large to fit in a single packet. The additional records are"
+                            + " not included.");
+            return outBuffer;
+        }
     }
 
     /**
@@ -245,7 +284,7 @@ public class MdnsReplySender {
                 return;
             }
 
-            mSharedLog.log("Sending " + replyInfo);
+            Log.i(TAG, "Sending " + replyInfo);
 
             final int flags = 0x8400; // Response, authoritative (rfc6762 18.4)
             final MdnsPacket packet = new MdnsPacket(flags,

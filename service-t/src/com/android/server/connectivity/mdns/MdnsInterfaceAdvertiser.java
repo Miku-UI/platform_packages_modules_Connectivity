@@ -276,7 +276,7 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
     public void addService(int id, NsdServiceInfo service,
             @NonNull MdnsAdvertisingOptions advertisingOptions) throws NameConflictException {
         final int replacedExitingService =
-                mRecordRepository.addService(id, service, advertisingOptions.getTtl());
+                mRecordRepository.addService(id, service, advertisingOptions);
         // Cancel announcements for the existing service. This only happens for exiting services
         // (so cancelling exiting announcements), as per RecordRepository.addService.
         if (replacedExitingService >= 0) {
@@ -287,6 +287,11 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
         final MdnsProber.ProbingInfo probingInfo = mRecordRepository.setServiceProbing(id);
         if (advertisingOptions.skipProbing()) {
             handleProbingFinished(probingInfo);
+        } else if (advertisingOptions.isOffloadOnly()) {
+            mSharedLog.i("skip probing and announcing for offload only service "
+                    + probingInfo.getServiceId());
+            mCbHandler.post(() -> mCb.onServiceProbingSucceeded(
+                    MdnsInterfaceAdvertiser.this, probingInfo.getServiceId()));
         } else {
             mProber.startProbing(probingInfo);
         }
@@ -443,7 +448,7 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
         // conflicting service is still probing and won't reply either.
         final MdnsReplyInfo answers = mRecordRepository.getReply(packet, srcCopy);
         // Dump the query packet.
-        if (DBG || answers != null) {
+        if (DBG && answers != null) {
             mSharedLog.v("Parsed packet with transactionId(" + packet.transactionId + "): "
                     + packet.questions.size() + " questions, "
                     + packet.answers.size() + " answers, "

@@ -38,6 +38,7 @@ import java.util.List;
  */
 public class MdnsSocket {
     static final int INTERFACE_INDEX_UNSPECIFIED = -1;
+    static final String INTERFACE_NAME_UNKNOWN = "";
     public static final InetSocketAddress MULTICAST_IPV4_ADDRESS =
             new InetSocketAddress(MdnsConstants.getMdnsIPv4Address(), MdnsConstants.MDNS_PORT);
     public static final InetSocketAddress MULTICAST_IPV6_ADDRESS =
@@ -64,7 +65,6 @@ public class MdnsSocket {
         // Time to live is set 255, which is similar to the jMDNS implementation.
         multicastSocket.setTimeToLive(255);
 
-        // TODO (changed when importing code): consider tagging the socket for data usage
         isOnIPv6OnlyNetwork = false;
     }
 
@@ -123,18 +123,35 @@ public class MdnsSocket {
 
     /**
      * Returns the index of the network interface that this socket is bound to. If the interface
-     * cannot be determined, returns -1.
+     * cannot be determined, returns INTERFACE_INDEX_UNSPECIFIED.
      */
     public int getInterfaceIndex() {
         if (multicastSocket.isClosed()) {
             sharedLog.e("Socket is closed");
-            return -1;
+            return INTERFACE_INDEX_UNSPECIFIED;
         }
         try {
             return multicastSocket.getNetworkInterface().getIndex();
         } catch (SocketException | NullPointerException e) {
             sharedLog.e("Failed to retrieve interface index for socket.", e);
-            return -1;
+            return INTERFACE_INDEX_UNSPECIFIED;
+        }
+    }
+
+    /**
+     * Returns the name of the network interface that this socket is bound to.
+     */
+    @NonNull
+    public String getInterfaceName() {
+        if (multicastSocket.isClosed()) {
+            sharedLog.e("Socket is closed");
+            return INTERFACE_NAME_UNKNOWN;
+        }
+        try {
+            return multicastSocket.getNetworkInterface().getName();
+        } catch (SocketException | NullPointerException e) {
+            sharedLog.e("Failed to retrieve interface name for socket.", e);
+            return INTERFACE_NAME_UNKNOWN;
         }
     }
 

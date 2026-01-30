@@ -18,7 +18,6 @@ package com.android.testutils
 
 import android.content.Context
 import android.net.ConnectivityManager
-import android.net.ConnectivityManager.FEATURE_QUEUE_NETWORK_AGENT_EVENTS_IN_SYSTEM_SERVER
 import android.net.InetAddresses.parseNumericAddress
 import android.net.KeepalivePacketData
 import android.net.LinkAddress
@@ -30,7 +29,6 @@ import android.net.NetworkCapabilities.NET_CAPABILITY_TRUSTED
 import android.net.NetworkCapabilities.TRANSPORT_TEST
 import android.net.NetworkProvider
 import android.net.NetworkRequest
-import android.net.NetworkScore
 import android.net.QosFilter
 import android.net.Uri
 import android.os.Looper
@@ -43,32 +41,32 @@ import android.system.OsConstants.ENONET
 import android.system.OsConstants.IPPROTO_UDP
 import android.system.OsConstants.SOCK_DGRAM
 import com.android.modules.utils.build.SdkLevel.isAtLeastS
-import com.android.net.module.util.ArrayTrackRecord
+import com.android.net.module.util.Expectable
+import com.android.net.module.util.TestableCallback
+import com.android.net.module.util.assertNo
+import com.android.net.module.util.eventuallyExpect
+import com.android.net.module.util.expect
 import com.android.testutils.CompatUtil.makeTestNetworkSpecifier
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnAddKeepalivePacketFilter
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnAutomaticReconnectDisabled
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnBandwidthUpdateRequested
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnDscpPolicyStatusUpdated
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnNetworkCreated
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnNetworkDestroyed
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnNetworkUnwanted
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnRegisterQosCallback
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnRemoveKeepalivePacketFilter
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnSaveAcceptUnvalidated
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnSignalStrengthThresholdsUpdated
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnStartSocketKeepalive
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnStopSocketKeepalive
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnUnregisterQosCallback
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnValidationStatus
+import com.android.testutils.TestableNetworkAgent.Event
+import com.android.testutils.TestableNetworkAgent.Event.OnAddKeepalivePacketFilter
+import com.android.testutils.TestableNetworkAgent.Event.OnAutomaticReconnectDisabled
+import com.android.testutils.TestableNetworkAgent.Event.OnBandwidthUpdateRequested
+import com.android.testutils.TestableNetworkAgent.Event.OnDscpPolicyStatusUpdated
+import com.android.testutils.TestableNetworkAgent.Event.OnNetworkCreated
+import com.android.testutils.TestableNetworkAgent.Event.OnNetworkDestroyed
+import com.android.testutils.TestableNetworkAgent.Event.OnNetworkUnwanted
+import com.android.testutils.TestableNetworkAgent.Event.OnRegisterQosCallback
+import com.android.testutils.TestableNetworkAgent.Event.OnRemoveKeepalivePacketFilter
+import com.android.testutils.TestableNetworkAgent.Event.OnSaveAcceptUnvalidated
+import com.android.testutils.TestableNetworkAgent.Event.OnSignalStrengthThresholdsUpdated
+import com.android.testutils.TestableNetworkAgent.Event.OnStartSocketKeepalive
+import com.android.testutils.TestableNetworkAgent.Event.OnStopSocketKeepalive
+import com.android.testutils.TestableNetworkAgent.Event.OnUnregisterQosCallback
+import com.android.testutils.TestableNetworkAgent.Event.OnValidationStatus
 import java.net.NetworkInterface
 import java.net.SocketException
 import java.time.Duration
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
-import kotlin.test.fail
-import org.junit.Assert.assertArrayEquals
 
 // Any legal score (0~99) for the test network would do, as it is going to be kept up by the
 // requests filed by the test and should never match normal internet requests. 70 is the default
@@ -82,14 +80,33 @@ private class Provider(context: Context, looper: Looper) :
 
 private val enabledFeatures = mutableMapOf<Long, Boolean>()
 
-public open class TestableNetworkAgent(
+open class TestableNetworkAgent(
     context: Context,
     looper: Looper,
     val nc: NetworkCapabilities,
     val lp: LinkProperties,
-    conf: NetworkAgentConfig
-) : NetworkAgent(context, looper, TestableNetworkAgent::class.java.simpleName /* tag */,
-    nc, lp, TEST_NETWORK_SCORE, conf, Provider(context, looper)) {
+    conf: NetworkAgentConfig,
+    private val internalEventTracker: TestableCallback<Event> = TestableCallback()
+) : NetworkAgent(
+    context,
+    looper,
+    TestableNetworkAgent::class.java.simpleName, // tag
+    nc,
+    lp,
+    TEST_NETWORK_SCORE,
+    conf,
+    Provider(context, looper)
+),
+    Expectable<Event> by internalEventTracker {
+
+    // For construction from Java, as @JvmOverloads can't apply to a constructor
+    constructor(
+        context: Context,
+        looper: Looper,
+        nc: NetworkCapabilities,
+        lp: LinkProperties,
+        conf: NetworkAgentConfig
+    ) : this(context, looper, nc, lp, conf, TestableCallback())
 
     override fun isFeatureEnabled(context: Context, feature: Long): Boolean {
         when (val it = enabledFeatures.get(feature)) {
@@ -193,34 +210,32 @@ public open class TestableNetworkAgent(
 
     val DEFAULT_TIMEOUT_MS = 5000L
 
-    val history = ArrayTrackRecord<CallbackEntry>().newReadHead()
-
-    sealed class CallbackEntry {
-        object OnBandwidthUpdateRequested : CallbackEntry()
-        object OnNetworkUnwanted : CallbackEntry()
+    sealed class Event {
+        object OnBandwidthUpdateRequested : Event()
+        object OnNetworkUnwanted : Event()
         data class OnAddKeepalivePacketFilter(
             val slot: Int,
             val packet: KeepalivePacketData
-        ) : CallbackEntry()
-        data class OnRemoveKeepalivePacketFilter(val slot: Int) : CallbackEntry()
+        ) : Event()
+        data class OnRemoveKeepalivePacketFilter(val slot: Int) : Event()
         data class OnStartSocketKeepalive(
             val slot: Int,
             val interval: Int,
             val packet: KeepalivePacketData
-        ) : CallbackEntry()
-        data class OnStopSocketKeepalive(val slot: Int) : CallbackEntry()
-        data class OnSaveAcceptUnvalidated(val accept: Boolean) : CallbackEntry()
-        object OnAutomaticReconnectDisabled : CallbackEntry()
-        data class OnValidationStatus(val status: Int, val uri: Uri?) : CallbackEntry()
-        data class OnSignalStrengthThresholdsUpdated(val thresholds: IntArray) : CallbackEntry()
-        object OnNetworkCreated : CallbackEntry()
-        object OnNetworkDestroyed : CallbackEntry()
-        data class OnDscpPolicyStatusUpdated(val policyId: Int, val status: Int) : CallbackEntry()
+        ) : Event()
+        data class OnStopSocketKeepalive(val slot: Int) : Event()
+        data class OnSaveAcceptUnvalidated(val accept: Boolean) : Event()
+        object OnAutomaticReconnectDisabled : Event()
+        data class OnValidationStatus(val status: Int, val uri: Uri?) : Event()
+        data class OnSignalStrengthThresholdsUpdated(val thresholds: IntArray) : Event()
+        object OnNetworkCreated : Event()
+        object OnNetworkDestroyed : Event()
+        data class OnDscpPolicyStatusUpdated(val policyId: Int, val status: Int) : Event()
         data class OnRegisterQosCallback(
             val callbackId: Int,
             val filter: QosFilter
-        ) : CallbackEntry()
-        data class OnUnregisterQosCallback(val callbackId: Int) : CallbackEntry()
+        ) : Event()
+        data class OnUnregisterQosCallback(val callbackId: Int) : Event()
     }
 
     override fun onBandwidthUpdateRequested() {
@@ -263,12 +278,6 @@ public open class TestableNetworkAgent(
         history.add(OnSignalStrengthThresholdsUpdated(thresholds))
     }
 
-    fun expectSignalStrengths(thresholds: IntArray? = intArrayOf()) {
-        expectCallback<OnSignalStrengthThresholdsUpdated>().let {
-            assertArrayEquals(thresholds, it.thresholds)
-        }
-    }
-
     override fun onQosCallbackRegistered(qosCallbackId: Int, filter: QosFilter) {
         history.add(OnRegisterQosCallback(qosCallbackId, filter))
     }
@@ -306,26 +315,34 @@ public open class TestableNetworkAgent(
         assertEquals("", it.uri.toString())
     }
 
-    inline fun <reified T : CallbackEntry> expectCallback(): T {
-        val foundCallback = history.poll(DEFAULT_TIMEOUT_MS)
-        assertTrue(foundCallback is T, "Expected ${T::class} but found $foundCallback")
-        return foundCallback
+    fun expectSignalStrengths(thresholds: IntArray? = intArrayOf()) {
+        expect<OnSignalStrengthThresholdsUpdated> { thresholds.contentEquals(it.thresholds) }
     }
 
-    inline fun <reified T : CallbackEntry> expectCallback(valid: (T) -> Boolean) {
-        val foundCallback = history.poll(DEFAULT_TIMEOUT_MS)
-        assertTrue(foundCallback is T, "Expected ${T::class} but found $foundCallback")
-        assertTrue(valid(foundCallback), "Unexpected callback : $foundCallback")
-    }
+    // ---- Bridge to TestableCallback, do not modify (implements standard behavior) ----
+    inline fun <reified T : Event> expect(
+        timeoutMs: Long = defaultTimeoutMs,
+        errorMsg: String? = null,
+        noinline predicate: (T) -> Boolean = { true }
+    ) = expect<_, T>(timeoutMs, errorMsg, predicate)
 
-    inline fun <reified T : CallbackEntry> eventuallyExpect() =
-            history.poll(DEFAULT_TIMEOUT_MS) { it is T }.also {
-                assertNotNull(it, "Callback ${T::class} not received")
-    } as T
+    inline fun <reified T : Event> eventuallyExpect(
+        timeoutMs: Long = defaultTimeoutMs,
+        errorMsg: String? = null,
+        noinline predicate: (T) -> Boolean = { true }
+    ) = eventuallyExpect<_, T>(timeoutMs, errorMsg, predicate)
 
-    fun assertNoCallback() {
-        assertTrue(waitForIdle(DEFAULT_TIMEOUT_MS),
-                "Handler didn't became idle after ${DEFAULT_TIMEOUT_MS}ms")
-        assertNull(history.peek())
-    }
+    inline fun <reified T : Event> assertNo(
+        timeoutMs: Long = defaultNoEventTimeoutMs,
+        errorMsg: String? = null,
+        noinline predicate: (T) -> Boolean = { true }
+    ): Unit = assertNo<Event, T>(timeoutMs, errorMsg, predicate)
+    // ---- End of copy-pasted section ----
+
+    // Backward compatibility : there are still callers with the old method names.
+    // TODO : migrate the callers to the new method names and remove these methods.
+    fun assertNoCallback() = assertNo<Event>()
+    inline fun <reified T : Event> expectCallback(): T = expect<T>()
+    inline fun <reified T : Event> expectCallback(noinline valid: (T) -> Boolean) =
+        expect<T>(predicate = valid)
 }

@@ -32,7 +32,6 @@ import static android.net.TetheringTester.buildUdpPacket;
 import static android.net.TetheringTester.isExpectedIcmpPacket;
 import static android.net.TetheringTester.isExpectedUdpDnsPacket;
 import static android.net.connectivity.ConnectivityCompatChanges.ENABLE_MATCH_NON_THREAD_LOCAL_NETWORKS;
-import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 import static android.system.OsConstants.ICMP_ECHO;
 import static android.system.OsConstants.ICMP_ECHOREPLY;
 import static android.system.OsConstants.IPPROTO_UDP;
@@ -63,6 +62,9 @@ import android.os.Build;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.os.VintfRuntimeInfo;
+import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.platform.test.flag.junit.CheckFlagsRule;
+import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.util.Log;
 import android.util.Pair;
 
@@ -75,26 +77,26 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BpfDump;
 import com.android.net.module.util.Ipv6Utils;
 import com.android.net.module.util.Struct;
+import com.android.net.module.util.Struct.S32;
 import com.android.net.module.util.bpf.ClatEgress4Key;
 import com.android.net.module.util.bpf.ClatEgress4Value;
 import com.android.net.module.util.bpf.ClatIngress6Key;
 import com.android.net.module.util.bpf.ClatIngress6Value;
 import com.android.net.module.util.bpf.Tether4Key;
 import com.android.net.module.util.bpf.Tether4Value;
-import com.android.net.module.util.bpf.TetherStatsKey;
 import com.android.net.module.util.bpf.TetherStatsValue;
 import com.android.net.module.util.structs.Ipv4Header;
 import com.android.net.module.util.structs.UdpHeader;
 import com.android.testutils.AutoReleaseNetworkCallbackRule;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
-import com.android.testutils.DeviceConfigRule;
 import com.android.testutils.DeviceInfoUtils;
 import com.android.testutils.DumpTestUtils;
 import com.android.testutils.NetworkStackModuleTest;
 import com.android.testutils.PollPacketReader;
-import com.android.testutils.RecorderCallback.CallbackEntry;
 import com.android.testutils.TestableNetworkCallback;
+import com.android.testutils.TestableNetworkCallback.Event;
+import com.android.tethering.mainline.beta.Flags;
 
 import org.junit.After;
 import org.junit.Rule;
@@ -122,9 +124,8 @@ import java.util.concurrent.TimeoutException;
 public class EthernetTetheringTest extends EthernetTetheringTestBase {
     @Rule
     public final DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule();
-    // For manipulating feature flag before and after testing.
     @Rule
-    public final DeviceConfigRule mDeviceConfigRule = new DeviceConfigRule();
+    public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
     @Rule
     public final AutoReleaseNetworkCallbackRule
             mNetworkCallbackRule = new AutoReleaseNetworkCallbackRule();
@@ -216,9 +217,6 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
             (byte) 0x00, (byte) 0x04,                           /* Data length: 4 */
             (byte) 0x01, (byte) 0x02, (byte) 0x03, (byte) 0x04  /* Address: 1.2.3.4 */
     };
-
-    // Shamelessly copied from TetheringConfiguration.
-    private static final String TETHERING_LOCAL_NETWORK_AGENT = "tethering_local_network_agent";
 
     @After
     public void tearDown() throws Exception {
@@ -1022,17 +1020,15 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
 
         final Tether4Key upstream4Key = rule.getKey();
         assertEquals(IPPROTO_UDP, upstream4Key.l4proto);
-        assertTrue(Arrays.equals(tethered.ipv4Addr.getAddress(), upstream4Key.src4));
+        assertEquals(tethered.ipv4Addr, upstream4Key.src4);
         assertEquals(LOCAL_PORT, upstream4Key.srcPort);
-        assertTrue(Arrays.equals(REMOTE_IP4_ADDR.getAddress(), upstream4Key.dst4));
+        assertEquals(REMOTE_IP4_ADDR, upstream4Key.dst4);
         assertEquals(REMOTE_PORT, upstream4Key.dstPort);
 
         final Tether4Value upstream4Value = rule.getValue();
-        assertTrue(Arrays.equals(tetheringUpstreamIp.getAddress(),
-                InetAddress.getByAddress(upstream4Value.src46).getAddress()));
+        assertEquals(tetheringUpstreamIp, upstream4Value.src46);
         assertEquals(LOCAL_PORT, upstream4Value.srcPort);
-        assertTrue(Arrays.equals(REMOTE_IP4_ADDR.getAddress(),
-                InetAddress.getByAddress(upstream4Value.dst46).getAddress()));
+        assertEquals(REMOTE_IP4_ADDR, upstream4Value.dst46);
         assertEquals(REMOTE_PORT, upstream4Value.dstPort);
 
         // [2] Verify stats map.
@@ -1054,15 +1050,15 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
         // Dump stats map to verify.
         final String[] statsArgs = new String[] {DUMPSYS_TETHERING_RAWMAP_ARG,
                 DUMPSYS_RAWMAP_ARG_STATS};
-        final HashMap<TetherStatsKey, TetherStatsValue> statsMap = pollRawMapFromDump(
-                TetherStatsKey.class, TetherStatsValue.class, Context.TETHERING_SERVICE, statsArgs);
+        final HashMap<S32, TetherStatsValue> statsMap = pollRawMapFromDump(
+                S32.class, TetherStatsValue.class, Context.TETHERING_SERVICE, statsArgs);
         assertNotNull(statsMap);
         assertEquals(1, statsMap.size());
 
-        final Map.Entry<TetherStatsKey, TetherStatsValue> stats =
+        final Map.Entry<S32, TetherStatsValue> stats =
                 statsMap.entrySet().iterator().next();
 
-        // TODO: verify the upstream index in TetherStatsKey.
+        // TODO: verify the upstream index in S32.
 
         final TetherStatsValue statsValue = stats.getValue();
         assertEquals(RX_UDP_PACKET_COUNT, statsValue.rxPackets);
@@ -1245,15 +1241,28 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
         }
     }
 
-    @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-    @Test
-    public void testLocalAgent_networkCallbacks() throws Exception {
-        final boolean isMatchNonThreadLocalNetworksEnabled = runAsShell(
-                READ_COMPAT_CHANGE_CONFIG, LOG_COMPAT_CHANGE,
-                () -> CompatChanges.isChangeEnabled(ENABLE_MATCH_NON_THREAD_LOCAL_NETWORKS));
-        assumeTrue(isMatchNonThreadLocalNetworksEnabled);
+    private void assumeMatchNonThreadLocalNetworksEnabled() {
+        assumeTrue(runAsShell(READ_COMPAT_CHANGE_CONFIG, LOG_COMPAT_CHANGE,
+                () -> CompatChanges.isChangeEnabled(ENABLE_MATCH_NON_THREAD_LOCAL_NETWORKS)));
+    }
 
-        mDeviceConfigRule.setConfig(NAMESPACE_TETHERING, TETHERING_LOCAL_NETWORK_AGENT, "1");
+    @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @RequiresFlagsEnabled(Flags.FLAG_TETHERING_AND_P2P_GO_LOCAL_AGENT)
+    @Test
+    public void testTetheringLocalAgent_networkCallbacks() throws Exception {
+        assumeMatchNonThreadLocalNetworksEnabled();
+        doTestLocalAgent_networkCallbacks(CONNECTIVITY_SCOPE_GLOBAL);
+    }
+
+    @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @RequiresFlagsEnabled(Flags.FLAG_TETHERING_AND_P2P_GO_LOCAL_AGENT)
+    @Test
+    public void testWifiP2pGroupOwnerLocalAgent_networkCallbacks() throws Exception {
+        assumeMatchNonThreadLocalNetworksEnabled();
+        doTestLocalAgent_networkCallbacks(CONNECTIVITY_SCOPE_LOCAL);
+    }
+
+    private void doTestLocalAgent_networkCallbacks(int scope) throws Exception {
         assumeFalse(isInterfaceForTetheringAvailable());
         setIncludeTestInterfaces(true);
 
@@ -1273,17 +1282,30 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
                     downstreamIface.getInterfaceName(), iface);
 
             final TetheringRequest request = new TetheringRequest.Builder(TETHERING_ETHERNET)
-                    .setConnectivityScope(CONNECTIVITY_SCOPE_GLOBAL).build();
+                    .setConnectivityScope(scope).build();
             tetheringEventCallback = enableTethering(iface, request, null /* any upstream */);
-            tetheringEventCallback.awaitInterfaceTethered();
+            if (scope == CONNECTIVITY_SCOPE_GLOBAL) {
+                tetheringEventCallback.awaitInterfaceTethered();
+            } else {
+                tetheringEventCallback.awaitInterfaceLocalOnly();
+            }
 
             // Verify NetworkCallback works accordingly.
-            final Network network = networkCallback.expect(CallbackEntry.AVAILABLE).getNetwork();
-            final CallbackEntry.CapabilitiesChanged capEvent =
-                    networkCallback.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED);
+            final Network network = networkCallback.expect(Event.AVAILABLE).getNetwork();
+            final Event.CapabilitiesChanged capEvent =
+                    networkCallback.eventuallyExpect(Event.NETWORK_CAPS_UPDATED);
             assertEquals(network, capEvent.getNetwork());
             assertTrue(capEvent.getCaps().hasTransport(TRANSPORT_ETHERNET));
             assertTrue(capEvent.getCaps().hasCapability(NET_CAPABILITY_LOCAL_NETWORK));
+
+            // Verify details in the LinkPropertiesChanged event.
+            final Event.LinkPropertiesChanged lpEvent =
+                    networkCallback.eventuallyExpect(Event.LINK_PROPERTIES_CHANGED);
+            assertEquals(network, lpEvent.getNetwork());
+            assertEquals(iface, lpEvent.getLp().getInterfaceName());
+            assertTrue(lpEvent.getLp().hasIPv4Address());
+            // At least one Ipv4 route for the subnet is needed.
+            assertTrue(lpEvent.getLp().getRoutes().size() >= 1);
         } finally {
             stopEthernetTethering(tetheringEventCallback);
             maybeCloseTestInterface(downstreamIface);

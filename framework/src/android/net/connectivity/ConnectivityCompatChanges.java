@@ -111,6 +111,8 @@ public final class ConnectivityCompatChanges {
      * {@link android.net.ConnectivityManager#getActiveNetwork()} always returns null.
      * {@link android.net.ConnectivityManager.NetworkCallback#onBlockedStatusChanged()} is always
      * called with blocked=true.
+     * {@link android.net.ConnectivityManager#requestNetwork} can not bring up metered network if
+     * the uid is restricted from using metered networks.
      * <p>
      * For backwards compatibility, apps running on older releases, or targeting older SDK levels,
      * network access from apps without {@link android.Manifest.permission#INTERNET} permission is
@@ -152,12 +154,12 @@ public final class ConnectivityCompatChanges {
     /**
      * Enable match non-threads local networks.
      *
-     * Apps targeting a release after V can have NetworkRequests matches non-thread local networks.
+     * Apps targeting a release after B can have NetworkRequests matches non-thread local networks.
      *
      * @hide
      */
     @ChangeId
-    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.BAKLAVA)
     public static final long ENABLE_MATCH_NON_THREAD_LOCAL_NETWORKS = 349487600L;
 
     private ConnectivityCompatChanges() {

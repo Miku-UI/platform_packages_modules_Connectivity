@@ -16,6 +16,7 @@
 
 package com.android.testutils
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
@@ -23,6 +24,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import com.android.internal.annotations.VisibleForTesting
 import com.android.net.module.util.BitUtils
+import com.android.testutils.TestableNetworkCallback.Event.CapabilitiesChanged
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import org.junit.runner.Description
@@ -36,12 +38,15 @@ class DefaultNetworkRestoreMonitor(
         private val notifier: RunNotifier,
         private val timeoutMs: Long = 30_000
 ) {
-    var firstFailure: Exception? = null
+    var firstFailure: Pair<Description, Exception>? = null
     var initialTransports = 0L
     val cm = ctx.getSystemService(ConnectivityManager::class.java)!!
     val pm = ctx.packageManager
     val listener = object : RunListener() {
+        @SuppressLint("WrongConstant") // transportNamesOf wants @Transport annotation
         override fun testFinished(desc: Description) {
+            fun ConnectivityManager.activeNetworkCaps() =
+                activeNetwork?.let { getNetworkCapabilities(it) }
             // Only the first method that does not restore the default network should be blamed.
             if (firstFailure != null) {
                 return
@@ -49,15 +54,17 @@ class DefaultNetworkRestoreMonitor(
             val cb = TestableNetworkCallback()
             cm.registerDefaultNetworkCallback(cb)
             try {
-                cb.eventuallyExpect<RecorderCallback.CallbackEntry.CapabilitiesChanged>(
-                    timeoutMs = timeoutMs
-                ) {
+                cb.eventuallyExpect<CapabilitiesChanged>(timeoutMs = timeoutMs) {
                     BitUtils.packBits(it.caps.transportTypes) == initialTransports &&
                             it.caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
                 }
             } catch (e: AssertionError) {
-                firstFailure = IllegalStateException(desc.methodName + " does not restore the" +
-                        "default network, initialTransports = $initialTransports", e)
+                val expectedTransports = BitUtils.unpackBits(initialTransports)
+                firstFailure = desc to
+                        IllegalStateException(desc.methodName + " does not restore the " +
+                        "default network. Default network has caps ${cm.activeNetworkCaps()} ; " +
+                        "expected a network with transports = " +
+                        NetworkCapabilities.transportNamesOf(expectedTransports))
             } finally {
                 cm.unregisterNetworkCallback(cb)
             }
@@ -79,10 +86,7 @@ class DefaultNetworkRestoreMonitor(
 
         val capFuture = CompletableFuture<NetworkCapabilities>()
         val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onCapabilitiesChanged(
-                    network: Network,
-                    cap: NetworkCapabilities
-            ) {
+            override fun onCapabilitiesChanged(network: Network, cap: NetworkCapabilities) {
                 capFuture.complete(cap)
             }
         }
@@ -91,9 +95,11 @@ class DefaultNetworkRestoreMonitor(
             val cap = capFuture.get(10_000, TimeUnit.MILLISECONDS)
             initialTransports = BitUtils.packBits(cap.transportTypes)
         } catch (e: Exception) {
-            firstFailure = IllegalStateException(
-                    "Failed to get default network status before starting tests", e
-            )
+            firstFailure = Description.createSuiteDescription("ConnectivityTestTargetPreparer") to
+                    IllegalStateException(
+                        "Failed to get default network status before starting tests",
+                        e
+                    )
         } finally {
             cm.unregisterNetworkCallback(cb)
         }
@@ -101,13 +107,15 @@ class DefaultNetworkRestoreMonitor(
     }
 
     fun reportResultAndCleanUp(desc: Description) {
-        notifier.fireTestStarted(desc)
-        if (firstFailure != null) {
-            notifier.fireTestFailure(
-                    Failure(desc, firstFailure)
-            )
+        val failure = firstFailure
+        if (failure != null) {
+            notifier.fireTestStarted(failure.first)
+            notifier.fireTestFailure(Failure(failure.first, failure.second))
+            notifier.fireTestFinished(failure.first)
+        } else {
+            notifier.fireTestStarted(desc)
+            notifier.fireTestFinished(desc)
         }
-        notifier.fireTestFinished(desc)
         notifier.removeListener(listener)
     }
 }

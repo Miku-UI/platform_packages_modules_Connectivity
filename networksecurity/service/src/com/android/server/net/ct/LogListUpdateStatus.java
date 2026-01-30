@@ -15,11 +15,15 @@
  */
 package com.android.server.net.ct;
 
+import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState.PUBLIC_KEY_INVALID;
+import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState.PUBLIC_KEY_NOT_ALLOWED;
 import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState.PUBLIC_KEY_NOT_FOUND;
 import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState.SIGNATURE_INVALID;
 import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState.SIGNATURE_NOT_FOUND;
 import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState.SIGNATURE_VERIFICATION_FAILED;
 import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState.SUCCESS;
+import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState.UNABLE_TO_READ_FILE;
+import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState.VERSION_ALREADY_EXISTS;
 
 import com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState;
 
@@ -41,12 +45,20 @@ public abstract class LogListUpdateStatus {
 
     abstract Optional<Integer> downloadStatus();
 
+    boolean isPublicKeySet() {
+        // Check that none of the public key setting failures have been set as the state
+        return state() != PUBLIC_KEY_INVALID
+                && state() != PUBLIC_KEY_NOT_ALLOWED
+                && state() != UNABLE_TO_READ_FILE;
+    }
+
     boolean isSignatureVerified() {
         // Check that none of the signature verification failures have been set as the state
         return state() != PUBLIC_KEY_NOT_FOUND
                 && state() != SIGNATURE_INVALID
                 && state() != SIGNATURE_NOT_FOUND
-                && state() != SIGNATURE_VERIFICATION_FAILED;
+                && state() != SIGNATURE_VERIFICATION_FAILED
+                && state() != UNABLE_TO_READ_FILE;
     }
 
     boolean hasSignature() {
@@ -55,6 +67,10 @@ public abstract class LogListUpdateStatus {
 
     boolean isSuccessful() {
         return state() == SUCCESS;
+    }
+
+    boolean isLogListAvailable() {
+        return state() == SUCCESS || state() == VERSION_ALREADY_EXISTS;
     }
 
     static LogListUpdateStatus getDefaultInstance() {
@@ -80,10 +96,10 @@ public abstract class LogListUpdateStatus {
 
     static Builder builder() {
         return new AutoValue_LogListUpdateStatus.Builder()
-            .setState(CTLogListUpdateState.UNKNOWN_STATE)
-            .setSignature("")
-            .setLogListTimestamp(0L)
-            .setHttpErrorStatusCode(0)
-            .setDownloadStatus(Optional.empty());
+                .setState(CTLogListUpdateState.UNKNOWN_STATE)
+                .setSignature("")
+                .setLogListTimestamp(0L)
+                .setHttpErrorStatusCode(0)
+                .setDownloadStatus(Optional.empty());
     }
 }

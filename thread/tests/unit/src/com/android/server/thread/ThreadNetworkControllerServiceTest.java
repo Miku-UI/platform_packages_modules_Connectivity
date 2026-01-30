@@ -179,8 +179,11 @@ public final class ThreadNetworkControllerServiceTest {
     private static final String TEST_VENDOR_NAME = "test vendor";
     private static final String TEST_MODEL_NAME = "test model";
     private static final LinkAddress TEST_NAT64_CIDR = new LinkAddress("192.168.255.0/24");
+    private static final int THREAD_NETWORK_PROVIDER_ID = 1;
 
     @Mock private MockableSystemProperties mMockSystemProperties;
+    @Mock private ThreadNetworkFactory mMockNetworkFactory;
+    @Mock private NetworkProvider mMockNetworkProvider;
     @Mock private ConnectivityManager mMockConnectivityManager;
     @Mock private RoutingCoordinatorManager mMockRoutingCoordinatorManager;
     @Mock private NetworkAgent mMockNetworkAgent;
@@ -233,8 +236,12 @@ public final class ThreadNetworkControllerServiceTest {
 
         mTestLooper = new TestLooper();
         final Handler handler = new Handler(mTestLooper.getLooper());
-        NetworkProvider networkProvider =
-                new NetworkProvider(mContext, mTestLooper.getLooper(), "ThreadNetworkProvider");
+
+        when(mMockNetworkFactory.getProvider()).thenReturn(mMockNetworkProvider);
+        doNothing().when(mMockNetworkFactory).register();
+
+        when(mMockConnectivityManager.registerNetworkProvider(any(NetworkProvider.class)))
+                .thenReturn(THREAD_NETWORK_PROVIDER_ID);
 
         when(mMockRoutingCoordinatorManager.requestDownstreamAddress(any()))
                 .thenReturn(TEST_NAT64_CIDR);
@@ -272,7 +279,7 @@ public final class ThreadNetworkControllerServiceTest {
                         mContext,
                         handler,
                         mMockSystemProperties,
-                        networkProvider,
+                        mMockNetworkFactory,
                         () -> mFakeOtDaemon,
                         mMockConnectivityManager,
                         mMockRoutingCoordinatorManager,
@@ -650,6 +657,43 @@ public final class ThreadNetworkControllerServiceTest {
         var thrown = assertThrows(ExecutionException.class, () -> setEnabledFuture.get());
         ThreadNetworkException failure = (ThreadNetworkException) thrown.getCause();
         assertThat(failure.getErrorCode()).isEqualTo(ERROR_FAILED_PRECONDITION);
+    }
+
+    @Test
+    public void setEnabled_success_threadNetworkEnabled() throws Exception {
+        mService.initialize();
+
+        CompletableFuture<Void> setEnabledFuture = new CompletableFuture<>();
+        mService.setEnabled(true, newOperationReceiver(setEnabledFuture));
+        mTestLooper.dispatchAll();
+
+        assertThat(mFakeOtDaemon.getEnabledState()).isEqualTo(STATE_ENABLED);
+    }
+
+    @Test
+    public void setDisabled_success_threadNetworkDisabled() throws Exception {
+        mService.initialize();
+
+        CompletableFuture<Void> setEnabledFuture = new CompletableFuture<>();
+        mService.setEnabled(false, newOperationReceiver(setEnabledFuture));
+        mTestLooper.dispatchAll();
+
+        assertThat(mFakeOtDaemon.getEnabledState()).isEqualTo(STATE_DISABLED);
+    }
+
+    @Test
+    public void setEnabled_otDaemonRemoteFailure_returnsInternalError() throws Exception {
+        mService.initialize();
+        CompletableFuture<Void> setEnabledFuture = new CompletableFuture<>();
+        mFakeOtDaemon.setSetEnabledException(
+                new RemoteException("ot-daemon setThreadEnabled() throws"));
+
+        mService.setEnabled(true, newOperationReceiver(setEnabledFuture));
+        mTestLooper.dispatchAll();
+
+        var thrown = assertThrows(ExecutionException.class, () -> setEnabledFuture.get());
+        ThreadNetworkException failure = (ThreadNetworkException) thrown.getCause();
+        assertThat(failure.getErrorCode()).isEqualTo(ERROR_INTERNAL_ERROR);
     }
 
     private AtomicReference<BroadcastReceiver> captureBroadcastReceiver(String action) {

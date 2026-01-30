@@ -22,6 +22,7 @@ import android.net.INetworkMonitor
 import android.net.INetworkMonitor.NETWORK_VALIDATION_PROBE_DNS
 import android.net.INetworkMonitor.NETWORK_VALIDATION_PROBE_HTTP
 import android.net.INetworkMonitorCallbacks
+import android.net.KeepalivePacketData
 import android.net.LinkProperties
 import android.net.LocalNetworkConfig
 import android.net.Network
@@ -35,11 +36,36 @@ import android.net.NetworkProvider
 import android.net.NetworkRequest
 import android.net.NetworkScore
 import android.net.NetworkTestResultParcelable
+import android.net.QosFilter
+import android.net.Uri
 import android.net.networkstack.NetworkStackClientBase
 import android.os.HandlerThread
-import com.android.testutils.RecorderCallback.CallbackEntry.Available
-import com.android.testutils.RecorderCallback.CallbackEntry.Lost
+import android.os.Looper
+import com.android.net.module.util.Expectable
+import com.android.net.module.util.TestableCallback
+import com.android.net.module.util.assertNo
+import com.android.net.module.util.eventuallyExpect
+import com.android.net.module.util.expect
+import com.android.testutils.TestableNetworkAgent.Event
+import com.android.testutils.TestableNetworkAgent.Event.OnAddKeepalivePacketFilter
+import com.android.testutils.TestableNetworkAgent.Event.OnAutomaticReconnectDisabled
+import com.android.testutils.TestableNetworkAgent.Event.OnBandwidthUpdateRequested
+import com.android.testutils.TestableNetworkAgent.Event.OnDscpPolicyStatusUpdated
+import com.android.testutils.TestableNetworkAgent.Event.OnNetworkCreated
+import com.android.testutils.TestableNetworkAgent.Event.OnNetworkDestroyed
+import com.android.testutils.TestableNetworkAgent.Event.OnNetworkUnwanted
+import com.android.testutils.TestableNetworkAgent.Event.OnRegisterQosCallback
+import com.android.testutils.TestableNetworkAgent.Event.OnRemoveKeepalivePacketFilter
+import com.android.testutils.TestableNetworkAgent.Event.OnSaveAcceptUnvalidated
+import com.android.testutils.TestableNetworkAgent.Event.OnSignalStrengthThresholdsUpdated
+import com.android.testutils.TestableNetworkAgent.Event.OnStartSocketKeepalive
+import com.android.testutils.TestableNetworkAgent.Event.OnStopSocketKeepalive
+import com.android.testutils.TestableNetworkAgent.Event.OnUnregisterQosCallback
+import com.android.testutils.TestableNetworkAgent.Event.OnValidationStatus
 import com.android.testutils.TestableNetworkCallback
+import com.android.testutils.TestableNetworkCallback.Event.Available
+import com.android.testutils.TestableNetworkCallback.Event.Lost
+import java.time.Duration
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.fail
@@ -74,8 +100,9 @@ class CSAgentWrapper(
         val lp: LinkProperties,
         val lnc: FromS<LocalNetworkConfig>?,
         val score: FromS<NetworkScore>,
-        val provider: NetworkProvider?
-) : TestableNetworkCallback.HasNetwork {
+        val provider: NetworkProvider?,
+        private val internalEventTracker: TestableCallback<Event> = TestableCallback()
+) : TestableNetworkCallback.HasNetwork, Expectable<Event> by internalEventTracker {
     private val TAG = "CSAgent${nextAgentId()}"
     private val VALIDATION_RESULT_INVALID = 0
     private val NO_PROBE_RESULT = 0
@@ -87,8 +114,102 @@ class CSAgentWrapper(
     private var nmValidationResult = NO_PROBE_RESULT
     private var nmProbesCompleted = NO_PROBE_RESULT
     private var nmProbesSucceeded = NO_PROBE_RESULT
+    val DEFAULT_TIMEOUT_MS = 5000L
 
     override val network: Network get() = agent.network!!
+
+    inner class TestAgent : NetworkAgent {
+        constructor(
+            context: Context,
+            looper: Looper,
+            tag: String,
+            nc: NetworkCapabilities,
+            lp: LinkProperties,
+            lnc: LocalNetworkConfig?,
+            score: NetworkScore,
+            nac: NetworkAgentConfig,
+            provider: NetworkProvider?
+        ) :
+                super(context, looper, tag, nc, lp, lnc, score, nac, provider) {
+        }
+
+        constructor(
+            context: Context,
+            looper: Looper,
+            tag: String,
+            nc: NetworkCapabilities,
+            lp: LinkProperties,
+            score: Int,
+            nac: NetworkAgentConfig,
+            provider: NetworkProvider?
+        ) :
+                super(context, looper, tag, nc, lp, score, nac, provider) {
+        }
+
+        override fun onBandwidthUpdateRequested() {
+            history.add(OnBandwidthUpdateRequested)
+        }
+
+        override fun onNetworkUnwanted() {
+            history.add(OnNetworkUnwanted)
+        }
+
+        override fun onAddKeepalivePacketFilter(slot: Int, packet: KeepalivePacketData) {
+            history.add(OnAddKeepalivePacketFilter(slot, packet))
+        }
+
+        override fun onRemoveKeepalivePacketFilter(slot: Int) {
+            history.add(OnRemoveKeepalivePacketFilter(slot))
+        }
+
+        override fun onStartSocketKeepalive(
+            slot: Int,
+            interval: Duration,
+            packet: KeepalivePacketData
+        ) {
+            history.add(OnStartSocketKeepalive(slot, interval.seconds.toInt(), packet))
+        }
+
+        override fun onStopSocketKeepalive(slot: Int) {
+            history.add(OnStopSocketKeepalive(slot))
+        }
+
+        override fun onSaveAcceptUnvalidated(accept: Boolean) {
+            history.add(OnSaveAcceptUnvalidated(accept))
+        }
+
+        override fun onAutomaticReconnectDisabled() {
+            history.add(OnAutomaticReconnectDisabled)
+        }
+
+        override fun onSignalStrengthThresholdsUpdated(thresholds: IntArray) {
+            history.add(OnSignalStrengthThresholdsUpdated(thresholds))
+        }
+
+        override fun onQosCallbackRegistered(qosCallbackId: Int, filter: QosFilter) {
+            history.add(OnRegisterQosCallback(qosCallbackId, filter))
+        }
+
+        override fun onQosCallbackUnregistered(qosCallbackId: Int) {
+            history.add(OnUnregisterQosCallback(qosCallbackId))
+        }
+
+        override fun onValidationStatus(status: Int, uri: Uri?) {
+            history.add(OnValidationStatus(status, uri))
+        }
+
+        override fun onNetworkCreated() {
+            history.add(OnNetworkCreated)
+        }
+
+        override fun onNetworkDestroyed() {
+            history.add(OnNetworkDestroyed)
+        }
+
+        override fun onDscpPolicyStatusUpdated(policyId: Int, status: Int) {
+            history.add(OnDscpPolicyStatusUpdated(policyId, status))
+        }
+    }
 
     init {
         // Capture network monitor callbacks and simulate network monitor
@@ -103,17 +224,18 @@ class CSAgentWrapper(
         val nmCbCaptor = ArgumentCaptor<INetworkMonitorCallbacks>()
         doNothing().`when`(networkStack).makeNetworkMonitor(
                 nmNetworkCaptor.capture(),
-                any() /* name */,
+                any(), // name
                 nmCbCaptor.capture()
         )
 
         // Create the actual agent. NetworkAgent is abstract, so make an anonymous subclass.
-        if (deps.isAtLeastS()) {
-            agent = object : NetworkAgent(context, csHandlerThread.looper, TAG,
-                    nc, lp, lnc?.value, score.value, nac, provider) {}
+        agent = if (deps.isAtLeastS()) {
+            TestAgent(
+                context, csHandlerThread.looper, TAG, nc, lp, lnc?.value,
+                score.value, nac, provider)
         } else {
-            agent = object : NetworkAgent(context, csHandlerThread.looper, TAG,
-                    nc, lp, 50 /* score */, nac, provider) {}
+            TestAgent(
+                context, csHandlerThread.looper, TAG, nc, lp, score = 50, nac, provider)
         }
         agent.register()
         assertEquals(agent.network!!.netId, nmNetworkCaptor.value.netId)
@@ -127,7 +249,7 @@ class CSAgentWrapper(
         } else {
             verify(networkMonitor).notifyNetworkConnected(any(), any())
         }
-        nmCallbacks.notifyProbeStatusChanged(0 /* completed */, 0 /* succeeded */)
+        nmCallbacks.notifyProbeStatusChanged(0, 0)
         val p = NetworkTestResultParcelable()
         p.result = nmValidationResult
         p.probesAttempted = nmProbesCompleted
@@ -191,6 +313,7 @@ class CSAgentWrapper(
             agent.unregister()
             cb.assertNoCallback()
         }
+        mgr.unregisterNetworkCallback(cb)
     }
 
     fun setTeardownDelayMillis(delayMillis: Int) = agent.setTeardownDelayMillis(delayMillis)
@@ -199,6 +322,7 @@ class CSAgentWrapper(
     fun sendLocalNetworkConfig(lnc: LocalNetworkConfig) = agent.sendLocalNetworkConfig(lnc)
     fun sendNetworkCapabilities(nc: NetworkCapabilities) = agent.sendNetworkCapabilities(nc)
     fun sendLinkProperties(lp: LinkProperties) = agent.sendLinkProperties(lp)
+    fun sendTeardownDelayMs(delayMs: Int) = agent.setTeardownDelayMillis(delayMs)
 
     fun connectWithCaptivePortal(redirectUrl: String) {
         setCaptivePortal(redirectUrl)
@@ -224,4 +348,24 @@ class CSAgentWrapper(
             probesSucceeded = NO_PROBE_RESULT
         )
     }
+
+    // ---- Bridge to TestableCallback, do not modify (implements standard behavior) ----
+    inline fun <reified T : Event> expect(
+        timeoutMs: Long = defaultTimeoutMs,
+        errorMsg: String? = null,
+        noinline predicate: (T) -> Boolean = { true }
+    ) = expect<_, T>(timeoutMs, errorMsg, predicate)
+
+    inline fun <reified T : Event> eventuallyExpect(
+        timeoutMs: Long = defaultTimeoutMs,
+        errorMsg: String? = null,
+        noinline predicate: (T) -> Boolean = { true }
+    ) = eventuallyExpect<_, T>(timeoutMs, errorMsg, predicate)
+
+    inline fun <reified T : Event> assertNo(
+        timeoutMs: Long = defaultTimeoutMs,
+        errorMsg: String? = null,
+        noinline predicate: (T) -> Boolean = { true }
+    ): Unit = assertNo<Event, T>(timeoutMs, errorMsg, predicate)
+    // ---- End of bridge section ----
 }

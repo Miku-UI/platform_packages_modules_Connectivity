@@ -54,7 +54,7 @@ import android.os.UserHandle;
  * Interface that answers queries about, and allows changing, the
  * state of network connectivity.
  */
-/** {@hide} */
+/** @hide */
 interface IConnectivityManager
 {
     Network getActiveNetwork();
@@ -266,4 +266,7 @@ interface IConnectivityManager
     long getEnabledConnectivityManagerFeatures();
 
     boolean isConnectivityServiceFeatureEnabledForTesting(String featureFlag);
+
+    oneway void registerQuicConnectionClosePayload(in ParcelFileDescriptor pfd, in byte[] payload);
+    oneway void unregisterQuicConnectionClosePayload(in ParcelFileDescriptor pfd);
 }

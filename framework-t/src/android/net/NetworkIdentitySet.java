@@ -19,9 +19,16 @@ package android.net;
 import static android.net.ConnectivityManager.TYPE_MOBILE;
 import static android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID;
 
+import static com.android.net.module.util.CollectionUtils.toIntArray;
+import static com.android.net.module.util.NetworkCapabilitiesUtils.deduceTransportTypeForLegacyNetworkType;
+
 import android.annotation.NonNull;
 import android.service.NetworkIdentitySetProto;
 import android.util.proto.ProtoOutputStream;
+
+import androidx.annotation.VisibleForTesting;
+
+import com.android.net.module.util.BitUtils;
 
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -43,7 +50,10 @@ public class NetworkIdentitySet extends HashSet<NetworkIdentity> {
     private static final int VERSION_ADD_METERED = 4;
     private static final int VERSION_ADD_DEFAULT_NETWORK = 5;
     private static final int VERSION_ADD_OEM_MANAGED_NETWORK = 6;
-    private static final int VERSION_ADD_SUB_ID = 7;
+    @VisibleForTesting
+    public static final int VERSION_ADD_SUB_ID = 7;
+    @VisibleForTesting
+    public static final int VERSION_ADD_TRANSPORT_TYPES = 8;
 
     /**
      * Construct a {@link NetworkIdentitySet} object.
@@ -112,8 +122,23 @@ public class NetworkIdentitySet extends HashSet<NetworkIdentity> {
                 subId = INVALID_SUBSCRIPTION_ID;
             }
 
+            final long transportTypesBits;
+            if (version >= VERSION_ADD_TRANSPORT_TYPES) {
+                transportTypesBits = in.readLong();
+            } else {
+                final int deducedTransport = deduceTransportTypeForLegacyNetworkType(type);
+                if (deducedTransport != -1) {
+                    transportTypesBits = BitUtils.packBits(new int[]{ deducedTransport });
+                } else {
+                    // Ignore legacy or unknown types. This is fine since this means
+                    // the legacy data cannot be queried by transport types,
+                    // which is not even supported now.
+                    transportTypesBits = 0;
+                }
+            }
+
             add(new NetworkIdentity(type, ratType, subscriberId, networkId, roaming, metered,
-                    defaultNetwork, oemNetCapabilities, subId));
+                    defaultNetwork, oemNetCapabilities, subId, transportTypesBits));
         }
     }
 
@@ -121,8 +146,12 @@ public class NetworkIdentitySet extends HashSet<NetworkIdentity> {
      * Method to serialize this object into a {@code DataOutput}.
      * @hide
      */
-    public void writeToStream(DataOutput out) throws IOException {
-        out.writeInt(VERSION_ADD_SUB_ID);
+    public void writeToStream(DataOutput out, boolean storeTransportTypes) throws IOException {
+        if (storeTransportTypes) {
+            out.writeInt(VERSION_ADD_TRANSPORT_TYPES);
+        } else {
+            out.writeInt(VERSION_ADD_SUB_ID);
+        }
         out.writeInt(size());
         for (NetworkIdentity ident : this) {
             out.writeInt(ident.getType());
@@ -134,6 +163,9 @@ public class NetworkIdentitySet extends HashSet<NetworkIdentity> {
             out.writeBoolean(ident.isDefaultNetwork());
             out.writeInt(ident.getOemManaged());
             out.writeInt(ident.getSubId());
+            if (storeTransportTypes) {
+                out.writeLong(BitUtils.packBits(toIntArray(ident.getTransportTypes())));
+            }
         }
     }
 
@@ -186,7 +218,13 @@ public class NetworkIdentitySet extends HashSet<NetworkIdentity> {
         return true;
     }
 
-    private static void writeOptionalString(DataOutput out, String value) throws IOException {
+    /**
+     * Writes an optional string to a {@link DataOutput} stream.
+     *
+     * @hide
+     */
+    @VisibleForTesting
+    public static void writeOptionalString(DataOutput out, String value) throws IOException {
         if (value != null) {
             out.writeByte(1);
             out.writeUTF(value);

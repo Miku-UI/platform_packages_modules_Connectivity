@@ -19,8 +19,8 @@ package com.android.cts.net.hostside;
 import static android.Manifest.permission.MANAGE_TEST_NETWORKS;
 import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.Manifest.permission.READ_DEVICE_CONFIG;
-import static android.Manifest.permission.WRITE_DEVICE_CONFIG;
 import static android.Manifest.permission.WRITE_ALLOWLISTED_DEVICE_CONFIG;
+import static android.Manifest.permission.WRITE_DEVICE_CONFIG;
 import static android.content.Context.RECEIVER_EXPORTED;
 import static android.content.pm.PackageManager.FEATURE_TELEPHONY;
 import static android.content.pm.PackageManager.FEATURE_WIFI;
@@ -52,8 +52,8 @@ import static com.android.cts.net.hostside.VpnTest.TestSocketKeepaliveCallback.C
 import static com.android.cts.net.hostside.VpnTest.TestSocketKeepaliveCallback.CallbackType.ON_STARTED;
 import static com.android.cts.net.hostside.VpnTest.TestSocketKeepaliveCallback.CallbackType.ON_STOPPED;
 import static com.android.testutils.Cleanup.testAndCleanup;
-import static com.android.testutils.RecorderCallback.CallbackEntry.BLOCKED_STATUS_INT;
 import static com.android.testutils.TestPermissionUtil.runAsShell;
+import static com.android.testutils.TestableNetworkCallback.Event.BLOCKED_STATUS_INT;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -130,9 +130,8 @@ import com.android.testutils.AutoReleaseNetworkCallbackRule;
 import com.android.testutils.ConnectUtil;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
-import com.android.testutils.RecorderCallback;
-import com.android.testutils.RecorderCallback.CallbackEntry;
 import com.android.testutils.TestableNetworkCallback;
+import com.android.testutils.TestableNetworkCallback.Event;
 
 import org.junit.After;
 import org.junit.Before;
@@ -199,7 +198,7 @@ public class VpnTest {
     private static final String PRIVATE_DNS_MODE_PROVIDER_HOSTNAME = "hostname";
     private static final String PRIVATE_DNS_MODE_OPPORTUNISTIC = "opportunistic";
     private static final String PRIVATE_DNS_SPECIFIER_SETTING = "private_dns_specifier";
-    private static final int NETWORK_CALLBACK_TIMEOUT_MS = 30_000;
+    private static final long NETWORK_CALLBACK_TIMEOUT_MS = 30_000;
 
     private static final LinkAddress TEST_IP4_DST_ADDR = new LinkAddress("198.51.100.1/24");
     private static final LinkAddress TEST_IP4_SRC_ADDR = new LinkAddress("198.51.100.2/24");
@@ -267,11 +266,14 @@ public class VpnTest {
         mNetwork = null;
         mTestContext = getInstrumentation().getContext();
         mTargetContext = getInstrumentation().getTargetContext();
-        getInstrumentation()
-                .getUiAutomation()
-                .grantRuntimePermission(
-                        "com.android.cts.net.hostside",
-                        "android.permission.NEARBY_WIFI_DEVICES");
+        if (SdkLevel.isAtLeastT()) {
+            // Permission NEARBY_WIFI_DEVICES was added in T.
+            getInstrumentation()
+                    .getUiAutomation()
+                    .grantRuntimePermission(
+                            "com.android.cts.net.hostside",
+                            "android.permission.NEARBY_WIFI_DEVICES");
+        }
         storePrivateDnsSetting();
         mDevice = UiDevice.getInstance(getInstrumentation());
         mActivity = launchActivity(mTargetContext.getPackageName(), MyActivity.class);
@@ -886,14 +888,14 @@ public class VpnTest {
 
     private void expectUnderlyingNetworks(TestableNetworkCallback callback,
             @Nullable List<Network> expectUnderlyingNetworks) {
-        callback.eventuallyExpect(RecorderCallback.CallbackEntry.NETWORK_CAPS_UPDATED,
+        callback.eventuallyExpect(TestableNetworkCallback.Event.NETWORK_CAPS_UPDATED,
                 NETWORK_CALLBACK_TIMEOUT_MS,
                 entry -> (Objects.equals(expectUnderlyingNetworks,
                         entry.getCaps().getUnderlyingNetworks())));
     }
 
     private void expectVpnNetwork(TestableNetworkCallback callback) {
-        callback.eventuallyExpect(RecorderCallback.CallbackEntry.NETWORK_CAPS_UPDATED,
+        callback.eventuallyExpect(TestableNetworkCallback.Event.NETWORK_CAPS_UPDATED,
                 NETWORK_CALLBACK_TIMEOUT_MS,
                 entry -> entry.getCaps().hasTransport(TRANSPORT_VPN));
     }
@@ -1009,7 +1011,7 @@ public class VpnTest {
             registerDefaultNetworkCallback(myUidCallback);
             myUidCallback.expectAvailableCallbacks(defaultNetwork, false /* suspended */,
                     true /* validated */, false /* blocked */, TIMEOUT_MS);
-            myUidCallback.expect(CallbackEntry.NETWORK_CAPS_UPDATED, defaultNetwork);
+            myUidCallback.expect(Event.NETWORK_CAPS_UPDATED, defaultNetwork);
         }
 
         FileDescriptor fd = openSocketFdInOtherApp(TEST_HOST, 80, TIMEOUT_MS);
@@ -1030,7 +1032,7 @@ public class VpnTest {
         checkTrafficOnVpn();
 
         final Network vpnNetwork = mCM.getActiveNetwork();
-        myUidCallback.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED,
+        myUidCallback.eventuallyExpect(Event.NETWORK_CAPS_UPDATED,
                 NETWORK_CALLBACK_TIMEOUT_MS,
                 entry -> entry.getNetwork().equals(vpnNetwork)
                         && entry.getCaps().hasCapability(NET_CAPABILITY_VALIDATED));
@@ -1065,8 +1067,8 @@ public class VpnTest {
     }
 
     private void assertNoCallbackExceptCapOrLpChange(TestableNetworkCallback callback) {
-        callback.assertNoCallback(c -> !(c instanceof CallbackEntry.CapabilitiesChanged
-                || c instanceof CallbackEntry.LinkPropertiesChanged));
+        callback.assertNoCallback(c -> !(c instanceof Event.CapabilitiesChanged
+                || c instanceof Event.LinkPropertiesChanged));
     }
 
     @Test
@@ -1182,12 +1184,12 @@ public class VpnTest {
         final Network defaultNetwork = mCM.getActiveNetwork();
         final TestableNetworkCallback cb = new TestableNetworkCallback();
         registerDefaultNetworkCallback(cb);
-        cb.expect(CallbackEntry.AVAILABLE, defaultNetwork);
+        cb.expect(Event.AVAILABLE, defaultNetwork);
         final NetworkCapabilities cap =
-                cb.expect(CallbackEntry.NETWORK_CAPS_UPDATED, defaultNetwork).getCaps();
+                cb.expect(Event.NETWORK_CAPS_UPDATED, defaultNetwork).getCaps();
         final LinkProperties lp =
-                cb.expect(CallbackEntry.LINK_PROPERTIES_CHANGED, defaultNetwork).getLp();
-        cb.expect(CallbackEntry.BLOCKED_STATUS, defaultNetwork);
+                cb.expect(Event.LINK_PROPERTIES_CHANGED, defaultNetwork).getLp();
+        cb.expect(Event.BLOCKED_STATUS, defaultNetwork);
 
         // Setup VPN
         final FileDescriptor fd = openSocketFdInOtherApp(TEST_HOST, 80, TIMEOUT_MS);
@@ -1932,7 +1934,7 @@ public class VpnTest {
 
             // The VPN will be the only default network for the app, so it's expected to receive
             // onLost() callback.
-            defaultNetworkCallback.eventuallyExpect(CallbackEntry.LOST);
+            defaultNetworkCallback.eventuallyExpect(Event.LOST);
 
             final ArrayList<Network> underlyingNetworks = new ArrayList<>();
             underlyingNetworks.add(defaultNetwork);
@@ -1943,18 +1945,18 @@ public class VpnTest {
 
             expectVpnNetwork(defaultNetworkCallback);
         }, /* cleanup */ () -> {
-                stopVpn();
-                defaultNetworkCallback.eventuallyExpect(CallbackEntry.LOST);
-            }, /* cleanup */ () -> {
-                runWithShellPermissionIdentity(() -> {
-                    mCM.setVpnDefaultForUids(session, new ArraySet<>());
-                }, NETWORK_SETTINGS);
-                // The default network of the app will be changed back to wifi when the VPN network
-                // preference feature is disabled.
-                defaultNetworkCallback.eventuallyExpect(CallbackEntry.AVAILABLE,
-                        NETWORK_CALLBACK_TIMEOUT_MS,
-                        entry -> defaultNetwork.equals(entry.getNetwork()));
-            });
+            stopVpn();
+            defaultNetworkCallback.eventuallyExpect(Event.LOST);
+        }, /* cleanup */ () -> {
+            runWithShellPermissionIdentity(() -> {
+                mCM.setVpnDefaultForUids(session, new ArraySet<>());
+            }, NETWORK_SETTINGS);
+            // The default network of the app will be changed back to wifi when the VPN network
+            // preference feature is disabled.
+            defaultNetworkCallback.eventuallyExpect(Event.AVAILABLE,
+                    NETWORK_CALLBACK_TIMEOUT_MS,
+                    entry -> defaultNetwork.equals(entry.getNetwork()));
+        });
     }
 
     /**
@@ -2133,7 +2135,7 @@ public class VpnTest {
                     BLOCKED_REASON_NONE, NETWORK_CALLBACK_TIMEOUT_MS);
         }
         public void onBlockedStatusChanged(Network network, int blockedReasons) {
-            getHistory().add(new CallbackEntry.BlockedStatusInt(network, blockedReasons));
+            getHistory().add(new Event.BlockedStatusInt(network, blockedReasons));
         }
     }
 }

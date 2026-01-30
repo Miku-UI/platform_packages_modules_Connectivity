@@ -75,9 +75,9 @@ import android.net.TransportInfo
 import android.net.Uri
 import android.net.VpnManager
 import android.net.VpnTransportInfo
-import android.net.cts.NetworkAgentTest.TestableQosCallback.CallbackEntry.OnError
-import android.net.cts.NetworkAgentTest.TestableQosCallback.CallbackEntry.OnQosSessionAvailable
-import android.net.cts.NetworkAgentTest.TestableQosCallback.CallbackEntry.OnQosSessionLost
+import android.net.cts.NetworkAgentTest.TestableQosCallback.Event.OnError
+import android.net.cts.NetworkAgentTest.TestableQosCallback.Event.OnQosSessionAvailable
+import android.net.cts.NetworkAgentTest.TestableQosCallback.Event.OnQosSessionLost
 import android.net.wifi.WifiInfo
 import android.os.Build
 import android.os.Handler
@@ -88,15 +88,17 @@ import android.os.Process
 import android.os.SystemClock
 import android.platform.test.annotations.AppModeFull
 import android.system.Os
+import android.system.OsConstants.AF_INET
 import android.system.OsConstants.AF_INET6
 import android.system.OsConstants.IPPROTO_TCP
 import android.system.OsConstants.IPPROTO_UDP
 import android.system.OsConstants.SOCK_DGRAM
+import android.system.OsConstants.SOCK_STREAM
+import android.system.OsConstants.SOL_SOCKET
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import android.telephony.data.EpsBearerQosSessionAttributes
 import android.util.ArraySet
-import android.util.DebugUtils.valueToString
 import androidx.test.InstrumentationRegistry
 import com.android.compatibility.common.util.SystemUtil.runShellCommand
 import com.android.compatibility.common.util.SystemUtil.runWithShellPermissionIdentity
@@ -112,33 +114,34 @@ import com.android.testutils.ConnectivityModuleTest
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo
 import com.android.testutils.DevSdkIgnoreRunner
 import com.android.testutils.PollPacketReader
-import com.android.testutils.RecorderCallback.CallbackEntry.Available
-import com.android.testutils.RecorderCallback.CallbackEntry.BlockedStatus
-import com.android.testutils.RecorderCallback.CallbackEntry.CapabilitiesChanged
-import com.android.testutils.RecorderCallback.CallbackEntry.LinkPropertiesChanged
-import com.android.testutils.RecorderCallback.CallbackEntry.Losing
-import com.android.testutils.RecorderCallback.CallbackEntry.Lost
 import com.android.testutils.TestableNetworkAgent
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnAddKeepalivePacketFilter
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnAutomaticReconnectDisabled
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnBandwidthUpdateRequested
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnNetworkCreated
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnNetworkDestroyed
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnNetworkUnwanted
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnRegisterQosCallback
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnRemoveKeepalivePacketFilter
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnSaveAcceptUnvalidated
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnStartSocketKeepalive
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnStopSocketKeepalive
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnUnregisterQosCallback
-import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnValidationStatus
+import com.android.testutils.TestableNetworkAgent.Event.OnAddKeepalivePacketFilter
+import com.android.testutils.TestableNetworkAgent.Event.OnAutomaticReconnectDisabled
+import com.android.testutils.TestableNetworkAgent.Event.OnBandwidthUpdateRequested
+import com.android.testutils.TestableNetworkAgent.Event.OnNetworkCreated
+import com.android.testutils.TestableNetworkAgent.Event.OnNetworkDestroyed
+import com.android.testutils.TestableNetworkAgent.Event.OnNetworkUnwanted
+import com.android.testutils.TestableNetworkAgent.Event.OnRegisterQosCallback
+import com.android.testutils.TestableNetworkAgent.Event.OnRemoveKeepalivePacketFilter
+import com.android.testutils.TestableNetworkAgent.Event.OnSaveAcceptUnvalidated
+import com.android.testutils.TestableNetworkAgent.Event.OnStartSocketKeepalive
+import com.android.testutils.TestableNetworkAgent.Event.OnStopSocketKeepalive
+import com.android.testutils.TestableNetworkAgent.Event.OnUnregisterQosCallback
+import com.android.testutils.TestableNetworkAgent.Event.OnValidationStatus
 import com.android.testutils.TestableNetworkCallback
+import com.android.testutils.TestableNetworkCallback.Event.Available
+import com.android.testutils.TestableNetworkCallback.Event.BlockedStatus
+import com.android.testutils.TestableNetworkCallback.Event.CapabilitiesChanged
+import com.android.testutils.TestableNetworkCallback.Event.LinkPropertiesChanged
+import com.android.testutils.TestableNetworkCallback.Event.Losing
+import com.android.testutils.TestableNetworkCallback.Event.Lost
 import com.android.testutils.assertThrows
 import com.android.testutils.com.android.testutils.CarrierConfigRule
 import com.android.testutils.runAsShell
 import com.android.testutils.tryTest
 import com.android.testutils.waitForIdle
 import java.io.Closeable
+import java.io.FileDescriptor
 import java.io.IOException
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -159,6 +162,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import org.junit.After
+import org.junit.Assume.assumeFalse
 import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
@@ -182,7 +186,8 @@ private const val DEFAULT_TIMEOUT_MS = 5000L
 
 private const val QUEUE_NETWORK_AGENT_EVENTS_IN_SYSTEM_SERVER =
     "queue_network_agent_events_in_system_server"
-
+private const val INGRESS_TO_VPN_ADDRESS_FILTERING =
+        "ingress_to_vpn_address_filtering"
 
 // When waiting for a NetworkCallback to determine there was no timeout, waiting is the
 // only possible thing (the relevant handler is the one in the real ConnectivityService,
@@ -192,6 +197,16 @@ private const val NO_CALLBACK_TIMEOUT = 200L
 private const val WORSE_NETWORK_SCORE = 65
 private const val BETTER_NETWORK_SCORE = 75
 private const val FAKE_NET_ID = 1098
+
+// These bit shifts and masks must be kept in sync with system/netd/include/Fwmark.h
+// LINT.IfChange
+private const val EXPLICITLY_SELECTED_BIT_MASK = 1 shl 16
+private const val PROTECTED_FROM_VPN_BIT_MASK = 1 shl 17
+private const val NETWORK_PERMISSION_BIT_SHIFT = 18
+private const val NETWORK_PERMISSION_BIT_MASK = 0xc0000
+private const val NETWORK_ID_MASK = 0xffff
+
+// LINT.ThenChange(//system/netd/include/Fwmark.h)
 private val instrumentation: Instrumentation
     get() = InstrumentationRegistry.getInstrumentation()
 private val realContext: Context
@@ -205,6 +220,7 @@ private fun Message(what: Int, arg1: Int, arg2: Int, obj: Any?) = Message.obtain
 
 private val LINK_ADDRESS = LinkAddress("2001:db8::1/64")
 private val REMOTE_ADDRESS = InetAddresses.parseNumericAddress("2001:db8::123")
+private val REMOTE_ADDRESS_V4 = InetAddresses.parseNumericAddress("192.0.2.11")
 private val PREFIX = IpPrefix("2001:db8::/64")
 private val NEXTHOP = InetAddresses.parseNumericAddress("fe80::abcd")
 
@@ -243,7 +259,6 @@ class NetworkAgentTest {
         get() = mCM.isConnectivityServiceFeatureEnabledForTesting(
             QUEUE_NETWORK_AGENT_EVENTS_IN_SYSTEM_SERVER
         )
-
 
     @Before
     fun setUp() {
@@ -706,7 +721,9 @@ class NetworkAgentTest {
         val specifier = when {
             transports.size != 1 -> null
             TRANSPORT_ETHERNET in transports -> EthernetNetworkSpecifier("testInterface")
-            TRANSPORT_CELLULAR in transports -> TelephonyNetworkSpecifier(subId)
+            TRANSPORT_CELLULAR in transports -> {
+                TelephonyNetworkSpecifier.Builder().setSubscriptionId(subId).build()
+            }
             else -> null
         }
         val transportInfo = if (TRANSPORT_WIFI in transports && SdkLevel.isAtLeastV()) {
@@ -777,9 +794,9 @@ class NetworkAgentTest {
                     expectUidsPresent = false
             )
 
-            // The tools to set the carrier service package override do not exist before U,
+            // The tools to set the carrier service package override do not exist before U QPR1,
             // so there is no way to test the rest of this test on < U.
-            if (!SdkLevel.isAtLeastU()) return@tryTest
+            if (!carrierConfigRule.isSettingCarrierServicePackageSupported()) return@tryTest
             // Acquiring carrier privilege is necessary to override the carrier service package.
             val defaultSlotIndex = SubscriptionManager.getSlotIndex(defaultSubId)
             carrierConfigRule.acquireCarrierPrivilege(defaultSubId)
@@ -973,12 +990,11 @@ class NetworkAgentTest {
         // underlying networks, and because not congested, not roaming, and not suspended are the
         // default anyway. It's still useful as an extra check though.
         vpnNc = mCM.getNetworkCapabilities(agent.network!!)!!
-        for (cap in listOf(
-            NET_CAPABILITY_NOT_CONGESTED,
-            NET_CAPABILITY_NOT_ROAMING,
-            NET_CAPABILITY_NOT_SUSPENDED
+        for ((cap, capStr) in listOf(
+            NET_CAPABILITY_NOT_CONGESTED to "NET_CAPABILITY_NOT_CONGESTED",
+            NET_CAPABILITY_NOT_ROAMING to "NET_CAPABILITY_NOT_ROAMING",
+            NET_CAPABILITY_NOT_SUSPENDED to "NET_CAPABILITY_NOT_SUSPENDED"
         )) {
-            val capStr = valueToString(NetworkCapabilities::class.java, "NET_CAPABILITY_", cap)
             if (defaultNetworkCapabilities.hasCapability(cap) && !vpnNc.hasCapability(cap)) {
                 fail("$capStr not propagated from underlying: $defaultNetworkCapabilities")
             }
@@ -1267,7 +1283,7 @@ class NetworkAgentTest {
                 .addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
                 .build(),
             bestMatchingCb,
-            mHandlerThread.threadHandler
+            Handler(mHandlerThread.looper)
         )
 
         val (agent1, _) = createConnectedNetworkAgent(specifier = "AGENT-1")
@@ -1311,14 +1327,155 @@ class NetworkAgentTest {
         // tearDown() will unregister the requests and agents
     }
 
-    private class TestableQosCallback : QosCallback() {
-        val history = ArrayTrackRecord<CallbackEntry>().newReadHead()
+    private fun prepareSocketForFwmarkTest(
+        network: Network,
+        select: Boolean,
+        proto: Int,
+        addressFamily: Int,
+        destAddress: InetSocketAddress?
+    ): FileDescriptor {
+        val sockFd = if (proto == IPPROTO_TCP) {
+            Os.socket(addressFamily, SOCK_STREAM, IPPROTO_TCP)
+        } else {
+            Os.socket(addressFamily, SOCK_DGRAM, IPPROTO_UDP)
+        }
+        if (select) {
+            network.bindSocket(sockFd)
+        }
+        if (destAddress != null) {
+            Os.connect(sockFd, destAddress.address, destAddress.port)
+        }
+        return sockFd
+    }
 
-        sealed class CallbackEntry {
+    private fun validateSocketFwmark(
+        sockFd: FileDescriptor,
+        network: Network,
+        expectExplicitlySelected: Boolean
+    ) {
+        val socketMark = Os.getsockoptInt(sockFd, SOL_SOCKET, 36 /* SO_MARK */)
+        val explicitlySelected = (socketMark and EXPLICITLY_SELECTED_BIT_MASK) != 0
+        val protectedFromVpn = (socketMark and PROTECTED_FROM_VPN_BIT_MASK) != 0
+        val networkPermission = (
+                (socketMark and NETWORK_PERMISSION_BIT_MASK) shr NETWORK_PERMISSION_BIT_SHIFT)
+        // TODO: Applying the verification method for the upper bit of netId that remains 0.
+        assertEquals(socketMark and NETWORK_ID_MASK, network.netId)
+        assertEquals(expectExplicitlySelected, explicitlySelected)
+        assertFalse(protectedFromVpn)
+        assertEquals(1, networkPermission) // This test APK has the CHANGE_NETWORK_STATE permission
+    }
+
+    @Test
+    fun testValidSocketFwmarkValue() {
+        // This test should be run starting with SDK version 36.1.
+        // TODO: @IgnoreUpTo doesn't support SDK_INT_FULL. We need a new annotation for it.
+        assumeTrue(Build.VERSION.SDK_INT_FULL > Build.VERSION_CODES_FULL.BAKLAVA)
+
+        data class TestCondition(
+            val net: Network,
+            val select: Boolean,
+            val proto: Int,
+            val addressFamily: Int,
+            val dest: InetSocketAddress?
+        )
+
+        val defaultNetworkCallback = TestableNetworkCallback()
+        mCM.registerDefaultNetworkCallback(defaultNetworkCallback)
+        val available = defaultNetworkCallback.eventuallyExpect<Available>()
+        val defaultNetwork = available.network
+        defaultNetworkCallback.expect<CapabilitiesChanged>(defaultNetwork)
+        val linkProperties = defaultNetworkCallback.expect<LinkPropertiesChanged>(defaultNetwork)
+        defaultNetworkCallback.expect<BlockedStatus>(defaultNetwork)
+        val afDefaultNet = if (linkProperties.lp.hasIPv6DefaultRoute()) {
+            AF_INET6
+        } else {
+            AF_INET
+        }
+        val address = if (afDefaultNet == AF_INET6) {
+            REMOTE_ADDRESS
+        } else {
+            REMOTE_ADDRESS_V4
+        }
+        val dest = InetSocketAddress(address, 32315 /* port */)
+
+        val (testAgent1, callback1) = createConnectedNetworkAgent()
+        val (testAgent2, callback2) = createConnectedNetworkAgent(specifier = "1")
+        val testNetwork1 = testAgent1.network!!
+        val testNetwork2 = testAgent2.network!!
+
+        val testSocketMap: MutableMap<TestCondition, FileDescriptor?> = mutableMapOf(
+            TestCondition(testNetwork1, true, IPPROTO_UDP, AF_INET6, null) to null,
+            TestCondition(testNetwork1, true, IPPROTO_TCP, AF_INET6, null) to null,
+            TestCondition(testNetwork2, true, IPPROTO_UDP, AF_INET6, null) to null,
+            TestCondition(testNetwork2, true, IPPROTO_TCP, AF_INET6, null) to null,
+            TestCondition(defaultNetwork, true, IPPROTO_UDP, afDefaultNet, null) to null,
+            TestCondition(defaultNetwork, true, IPPROTO_TCP, afDefaultNet, null) to null,
+            TestCondition(defaultNetwork, false, IPPROTO_UDP, afDefaultNet, dest) to null
+        )
+
+        fun prepareTestSockets(map: MutableMap<TestCondition, FileDescriptor?>) {
+            map.keys.forEach { cond ->
+                map[cond] = prepareSocketForFwmarkTest(
+                    cond.net, cond.select, cond.proto, cond.addressFamily, cond.dest)
+            }
+        }
+
+        fun closeSockets(map: MutableMap<TestCondition, FileDescriptor?>) {
+            map.keys.forEach { cond ->
+                if (map[cond] != null) {
+                    Os.close(map[cond])
+                    map[cond] = null
+                }
+            }
+        }
+
+        fun verifySockets(map: MutableMap<TestCondition, FileDescriptor?>) {
+            map.keys.forEach { cond ->
+                assertNotNull(map[cond])
+                validateSocketFwmark(map[cond]!!, cond.net, cond.select)
+            }
+        }
+
+        var retryCount = 0
+        val maxRetries = 1
+
+        try {
+            while (retryCount <= maxRetries) {
+                try {
+                    prepareTestSockets(testSocketMap)
+                    defaultNetworkCallback.assertNoCallback(NO_CALLBACK_TIMEOUT)
+                    break
+                } catch (e: AssertionError) {
+                    closeSockets(testSocketMap)
+                    retryCount++
+                    if (retryCount > maxRetries) {
+                        throw e
+                    }
+                }
+            }
+            // Even if the default network changes, below test verifySockets() will not fail,
+            // because the socket's fwmark remains after the network disconnection, and they
+            // are not connected TCP sockets, so not destroyed until test program closes it.
+            verifySockets(testSocketMap)
+        } finally {
+            // This block is the final cleanup, ensuring no resources are left open.
+            closeSockets(testSocketMap)
+            mCM.unregisterNetworkCallback(defaultNetworkCallback)
+            mCM.unregisterNetworkCallback(callback1)
+            mCM.unregisterNetworkCallback(callback2)
+            testAgent1.unregister()
+            testAgent2.unregister()
+        }
+    }
+
+    private class TestableQosCallback : QosCallback() {
+        val history = ArrayTrackRecord<Event>().newReadHead()
+
+        sealed class Event {
             data class OnQosSessionAvailable(val sess: QosSession, val attr: QosSessionAttributes) :
-                CallbackEntry()
-            data class OnQosSessionLost(val sess: QosSession) : CallbackEntry()
-            data class OnError(val ex: QosCallbackException) : CallbackEntry()
+                Event()
+            data class OnQosSessionLost(val sess: QosSession) : Event()
+            data class OnError(val ex: QosCallbackException) : Event()
         }
 
         override fun onQosSessionAvailable(sess: QosSession, attr: QosSessionAttributes) {
@@ -1333,13 +1490,13 @@ class NetworkAgentTest {
             history.add(OnError(ex))
         }
 
-        inline fun <reified T : CallbackEntry> expectCallback(): T {
+        inline fun <reified T : Event> expectCallback(): T {
             val foundCallback = history.poll(DEFAULT_TIMEOUT_MS)
             assertTrue(foundCallback is T, "Expected ${T::class} but found $foundCallback")
             return foundCallback
         }
 
-        inline fun <reified T : CallbackEntry> expectCallback(valid: (T) -> Boolean) {
+        inline fun <reified T : Event> expectCallback(valid: (T) -> Boolean) {
             val foundCallback = history.poll(DEFAULT_TIMEOUT_MS)
             assertTrue(foundCallback is T, "Expected ${T::class} but found $foundCallback")
             assertTrue(valid(foundCallback), "Unexpected callback : $foundCallback")
@@ -1394,6 +1551,25 @@ class NetworkAgentTest {
                 agent.expectCallback<OnRegisterQosCallback>().let {
                     callbackId = it.callbackId
                     assertTrue(it.filter.matchesProtocol(proto))
+                    if (Build.VERSION.SDK_INT_FULL > Build.VERSION_CODES_FULL.BAKLAVA) {
+                        // Available from SDK version 36.1 (25Q4)
+                        // This test is only validating QosFilter address match APIs can be called.
+                        // Detail functionality checks are executed on QosSocketFilterTest.
+                        // Verify the match of test socket's Local address, currently the test
+                        // socket binds to the loopback address.
+                        assertTrue(it.filter.matchesLocalPrefix(
+                            IpPrefix(InetAddress.getLoopbackAddress(), 128),
+                            0,
+                            65535
+                        ))
+                        // Since the test socket doesn't connect to the remote address, we expect
+                        // unmatched result.
+                        assertFalse(it.filter.matchesRemotePrefix(
+                            IpPrefix(InetAddress.getLoopbackAddress(), 128),
+                            0,
+                            65535
+                        ))
+                    }
                 }
 
                 assertFailsWith<QosCallbackRegistrationException>(
@@ -1589,14 +1765,22 @@ class NetworkAgentTest {
     private fun createEpsAttributes(qci: Int = 1): EpsBearerQosSessionAttributes {
         val remoteAddresses = ArrayList<InetSocketAddress>()
         remoteAddresses.add(InetSocketAddress(REMOTE_ADDRESS, 80))
-        return EpsBearerQosSessionAttributes(
-            qci,
-            2,
-            3,
-            4,
-            5,
-            remoteAddresses
-        )
+        return EpsBearerQosSessionAttributes::class.java
+            .getConstructor(
+                Int::class.java,
+                Long::class.java,
+                Long::class.java,
+                Long::class.java,
+                Long::class.java,
+                List::class.java
+            ).newInstance(
+                qci,
+                2,
+                3,
+                4,
+                5,
+                remoteAddresses
+            )
     }
 
     fun sendAndExpectUdpPacket(
@@ -2015,5 +2199,106 @@ class NetworkAgentTest {
         // For backward compatibility, this shouldn't crash.
         val agent = createNetworkAgent()
         agent.unregister()
+    }
+
+    fun getBinderProxyCount(): Int {
+        // Call gc before checking binder proxy count.
+        System.gc()
+        System.runFinalization()
+        System.gc()
+
+        // Extracts the number of binder proxy objects from the `dumpsys meminfo` output.
+        // Expects a line in the format: "Local Binders: 13 Proxy Binders: 30".
+        val dumpOutput = ("dumpsys meminfo " + Process.myPid()).execute()
+        val line = dumpOutput.split("\n").firstOrNull { it.contains("Proxy Binders:") }
+        assertNotNull(line, "Dumpsys does not contain \"Proxy Binders:\", output: $dumpOutput")
+
+        val matched = Regex("Proxy Binders:\\s*(\\d+)").find(line)
+        assertNotNull(matched, "Failed to parse, line: $line")
+
+        return matched.groupValues[1].toInt()
+    }
+
+    @Test
+    fun testRegisterUnregisterDoesNotLeakBinderProxy() {
+        val startCount = getBinderProxyCount()
+
+        for (i in 1..30) {
+            val agent = createNetworkAgent(realContext)
+            agent.register()
+            agent.unregister()
+        }
+
+        val deadline = SystemClock.elapsedRealtime() + DEFAULT_TIMEOUT_MS
+        var endCount: Int
+        do {
+            endCount = getBinderProxyCount()
+            if (endCount - startCount < 10) return
+            SystemClock.sleep(50 /* ms */)
+        } while (SystemClock.elapsedRealtime() < deadline)
+        fail("Binder Proxy is leaked: $startCount -> $endCount")
+    }
+
+    fun doTestIngressToVpnAddressFiltering(vpnType: Int, expectFiltering: Boolean) {
+        assumeTrue(mCM.isConnectivityServiceFeatureEnabledForTesting(
+                INGRESS_TO_VPN_ADDRESS_FILTERING
+        ))
+
+        val ifname = createTunInterface(listOf(LINK_ADDRESS)).interfaceName
+        val lp = makeTestLinkProperties(ifname)
+        val nc = makeTestNetworkCapabilities(transports = intArrayOf(TRANSPORT_VPN)).apply {
+            setTransportInfo(VpnTransportInfo(
+                    vpnType,
+                    "MySession12345",
+                    /*bypassable=*/
+                    false,
+                    /*longLivedTcpConnectionsExpensive=*/
+                    false
+            ))
+        }
+        val agent = createNetworkAgent(initialNc = nc, initialLp = lp)
+        agent.register()
+        agent.markConnected()
+
+        val cb = TestableNetworkCallback()
+        registerNetworkCallback(makeTestNetworkRequest(), cb)
+        cb.eventuallyExpect<LinkPropertiesChanged> {
+            it.network == agent.network
+        }
+
+        val ifIndex = Os.if_nametoindex(ifname)
+        val ruleString = "[" + LINK_ADDRESS.address + "]: " + ifIndex + "(" + ifname + ")"
+        assertEquals(
+                expectFiltering,
+                "dumpsys connectivity trafficcontroller".execute().contains(ruleString)
+        )
+    }
+
+    @Test
+    fun testIngressToVpnAddressFiltering_VpnPlatform() {
+        doTestIngressToVpnAddressFiltering(
+            vpnType = VpnManager.TYPE_VPN_PLATFORM,
+            expectFiltering = true
+        )
+    }
+
+    @Test
+    fun testIngressToVpnAddressFiltering_VpnOem() {
+        // Ingress to VPN address filtering rule should not be added because OEM VPNs might need to
+        // receive packets to VPN address via non-VPN interface.
+        doTestIngressToVpnAddressFiltering(
+            vpnType = VpnManager.TYPE_VPN_OEM,
+            expectFiltering = false
+        )
+    }
+
+    @Test
+    fun testIngressToVpnAddressFiltering_VpnLegacy() {
+        // Ingress to VPN address filtering rule should not be added because legacy VPNs might need
+        // to receive packets to VPN address via non-VPN interface.
+        doTestIngressToVpnAddressFiltering(
+            vpnType = VpnManager.TYPE_VPN_LEGACY,
+            expectFiltering = false
+        )
     }
 }
